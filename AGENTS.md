@@ -48,7 +48,7 @@ All code is currently organized within `src/main.rs`:
 - Mine placement is deferred until the first reveal. A small deterministic wrapping PRNG selects mines outside the first cell's safe neighborhood; resets increment the seed. Empty-cell expansion uses an explicit stack rather than recursion.
 - `poll`, `elapsed_seconds`, and `format_time` implement timing with Rune's logical clock, not wall-clock reads.
 - `cell_view` renders one accessible, focusable button per cell. `view` builds the title, status, difficulty controls, board, timer, New Game button, and record display from Rune elements and `rune::tok` theme values.
-- Event handlers mutate `State`; transaction-aware reveal handlers read the clock from `Tx`, and difficulty handlers use `Tx::resize_window`.
+- Event handlers mutate `State`; transaction-aware reveal handlers read the clock from `Tx`. Difficulty handlers use `Tx::resize_window` immediately in a window, but defer it during macOS fullscreen (reported by a zero `Cx::titlebar_inset`) and apply it once on the windowed root layout.
 
 `State::default` opens Rune preferences with application ID `com.madware.minesweeper`. Records use keys `best_easy`, `best_moderate`, and `best_hard`. Only a winning time that improves the current difficulty's record replaces it. Writes are best-effort by design; the in-memory record still updates if persistence fails. Starting a new game or changing difficulty preserves records.
 

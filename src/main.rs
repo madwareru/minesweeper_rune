@@ -68,12 +68,6 @@ struct Cell {
     adjacent: u8,
 }
 
-impl Cell {
-    pub(crate) fn revealed_or_flagged(&self) -> bool {
-        self.revealed || self.flagged
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Outcome {
     Playing,
@@ -92,7 +86,9 @@ struct State {
     finished_at: Option<f64>,
     records: [Option<u64>; 3],
     prefs: Prefs,
-    flood_fill_stack: Vec<usize>,
+    window_resize_pending: bool,
+    /// used to avoid heap allocations for temporary vectors
+    tmp_buffer: Vec<usize>,
 }
 
 impl State {
@@ -114,15 +110,15 @@ impl State {
             finished_at: None,
             records,
             prefs,
-            flood_fill_stack: vec![],
+            window_resize_pending: false,
+            tmp_buffer: vec![],
         }
     }
 
     fn elapsed_seconds(&self) -> u64 {
-        let Some(started_at) = self.started_at else {
-            return 0;
-        };
-        (self.finished_at.unwrap_or(self.clock) - started_at).max(0.0) as u64
+        self.started_at
+            .map(|started_at| (self.finished_at.unwrap_or(self.clock) - started_at).max(0.0) as u64)
+            .unwrap_or(0)
     }
 
     fn reveal(&mut self, index: usize) {
@@ -132,7 +128,8 @@ impl State {
         if index >= self.cells.len() {
             return;
         }
-        if self.cells[index].revealed_or_flagged() {
+        let self1 = &self.cells[index];
+        if self1.revealed || self1.flagged {
             return;
         }
 
@@ -172,48 +169,54 @@ impl State {
     }
 
     fn reveal_area_at(&mut self, index: usize) {
-        self.flood_fill_stack.clear();
-        self.flood_fill_stack.push(index);
+        self.tmp_buffer.clear();
+        self.tmp_buffer.push(index);
 
-        while let Some(current) = self.flood_fill_stack.pop() {
+        while let Some(current) = self.tmp_buffer.pop() {
             let cell = &mut self.cells[current];
             if cell.revealed || cell.flagged || cell.mine {
                 continue;
             }
+
             cell.revealed = true;
             if cell.adjacent == 0 {
-                self.flood_fill_stack
-                    .extend(neighbors(self.difficulty, current));
+                self.tmp_buffer.extend(neighbors(self.difficulty, current));
             }
         }
     }
 
     fn check_loss(&mut self, index: usize) -> bool {
-        if self.cells[index].mine {
-            for mine_cell in self.cells.iter_mut().filter(|cell| cell.mine) {
-                mine_cell.revealed = true;
-            }
-            self.outcome = Outcome::Lost;
-            self.finished_at = Some(self.clock);
-            return true;
+        if !self.cells[index].mine {
+            return false;
         }
-        false
+
+        for mine_cell in self.cells.iter_mut().filter(|cell| cell.mine) {
+            mine_cell.revealed = true;
+        }
+
+        self.outcome = Outcome::Lost;
+        self.finished_at = Some(self.clock);
+        true
     }
 
     fn reveal_adjacent(&mut self, index: usize) {
         if index >= self.cells.len() || self.outcome != Outcome::Playing {
             return;
         }
+
         let cell = self.cells[index];
         if !cell.revealed || cell.mine || cell.adjacent == 0 {
             return;
         }
+
         let flags = neighbors(self.difficulty, index)
             .filter(|&neighbor| self.cells[neighbor].flagged)
             .count() as u8;
+
         if flags != cell.adjacent {
             return;
         }
+
         for neighbor in neighbors(self.difficulty, index) {
             self.reveal(neighbor);
         }
@@ -246,23 +249,25 @@ impl State {
     }
 
     fn place_mines(&mut self, first: usize) {
-        let mut safe = vec![false; self.cells.len()];
-        safe[first] = true;
-        for neighbor in neighbors(self.difficulty, first) {
-            safe[neighbor] = true;
+        self.tmp_buffer.clear();
+        for i in 0..self.cells.len() {
+            if i == first || neighbors(self.difficulty, first).any(|neighbor| i == neighbor) {
+                continue;
+            }
+
+            self.tmp_buffer.push(i);
         }
-        let mut candidates: Vec<_> = (0..self.cells.len())
-            .filter(|&index| !safe[index])
-            .collect();
+
         let mut random = self.seed;
         for index in 0..self.difficulty.mines() {
             random = random
                 .wrapping_mul(6_364_136_223_846_793_005)
                 .wrapping_add(1_442_695_040_888_963_407);
-            let other = index + random as usize % (candidates.len() - index);
-            candidates.swap(index, other);
-            self.cells[candidates[index]].mine = true;
+            let other = index + random as usize % (self.tmp_buffer.len() - index);
+            self.tmp_buffer.swap(index, other);
+            self.cells[self.tmp_buffer[index]].mine = true;
         }
+
         for index in 0..self.cells.len() {
             let adjacent = neighbors(self.difficulty, index)
                 .filter(|&neighbor| self.cells[neighbor].mine)
@@ -314,6 +319,10 @@ fn window_size(difficulty: Difficulty) -> (f32, f32) {
     let board_width = difficulty.width() as f32 * 40.0 - 4.0;
     let board_height = difficulty.height() as f32 * 40.0 - 4.0;
     ((board_width + 32.0).max(420.0), board_height + 248.0)
+}
+
+fn should_resize_window(titlebar_inset: f32) -> bool {
+    !cfg!(target_os = "macos") || titlebar_inset > 0.0
 }
 
 fn cell_view(state: &State, index: usize, theme: tok::Theme) -> El {
@@ -378,8 +387,9 @@ fn cell_view(state: &State, index: usize, theme: tok::Theme) -> El {
         .child(text(content).font(type_::TITLE).color(color))
 }
 
-fn view(state: &State, _: &mut Cx<State>) -> El {
+fn view(state: &State, cx: &mut Cx<State>) -> El {
     let theme = tok::theme(true);
+    let resize_window = should_resize_window(cx.titlebar_inset());
     let flags = state.cells.iter().filter(|cell| cell.flagged).count();
     let remaining = state.difficulty.mines() as isize - flags as isize;
     let status = match state.outcome {
@@ -403,7 +413,11 @@ fn view(state: &State, _: &mut Cx<State>) -> El {
             })
             .on_press_tx(move |state: &mut State, tx| {
                 state.set_difficulty(difficulty);
-                tx.resize_window(window_size(difficulty));
+                if resize_window {
+                    tx.resize_window(window_size(difficulty));
+                } else {
+                    state.window_resize_pending = true;
+                }
             })
             .child(text(difficulty.name()).font(type_::LABEL).color(theme.text))
     }));
@@ -445,6 +459,12 @@ fn view(state: &State, _: &mut Cx<State>) -> El {
         .gap(16.0)
         .padding(16.0)
         .fill(theme.bg)
+        .on_layout_tx(move |state: &mut State, _, tx| {
+            if resize_window && state.window_resize_pending {
+                state.window_resize_pending = false;
+                tx.resize_window(window_size(state.difficulty));
+            }
+        })
         .child(text("MINESWEEPER").font(type_::TITLE).color(theme.text))
         .child(
             text(status)
@@ -832,6 +852,29 @@ mod tests {
         assert_eq!(format_time(0), "0:00");
         assert_eq!(format_time(65), "1:05");
         assert_eq!(format_time(3600), "60:00");
+    }
+
+    #[test]
+    fn difficulty_resize_only_skips_macos_fullscreen() {
+        assert_eq!(should_resize_window(0.0), !cfg!(target_os = "macos"));
+        assert!(should_resize_window(30.0));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn leaving_fullscreen_applies_pending_difficulty_resize() {
+        let mut runtime = runtime(State::new(1));
+        runtime.set_titlebar_inset(0.0);
+        runtime.set_viewport((1440.0, 900.0), 2.0);
+        runtime.frame(0.0);
+        click(&mut runtime, "difficulty-hard");
+        assert!(runtime.state.window_resize_pending);
+
+        runtime.set_titlebar_inset(30.0);
+        runtime.set_viewport(window_size(Difficulty::Easy), 2.0);
+        runtime.frame(0.0);
+        runtime.frame(0.0);
+        assert!(!runtime.state.window_resize_pending);
     }
 
     #[test]
