@@ -2,6 +2,8 @@
 
 A small native Minesweeper game written in Rust with [Rune](https://github.com/anomalyco/rune).
 
+![Minesweeper after revealing a mine](docs/lost.png)
+
 ## Features
 
 - Easy, Moderate, and Hard difficulty modes
