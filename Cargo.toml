@@ -1,0 +1,14 @@
+[package]
+name = "minesweeper_rune"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rune = { git = "https://github.com/anomalyco/rune", rev = "958743308f36fdf1c568c513badc96ddb0c7f040" }
+
+[patch.crates-io]
+wgpu-hal = { git = "https://github.com/anomalyco/rune", rev = "958743308f36fdf1c568c513badc96ddb0c7f040" }
+winit = { git = "https://github.com/anomalyco/rune", rev = "958743308f36fdf1c568c513badc96ddb0c7f040" }
+parley_engine = { git = "https://github.com/anomalyco/rune", rev = "958743308f36fdf1c568c513badc96ddb0c7f040" }
+accesskit_windows = { git = "https://github.com/anomalyco/rune", rev = "958743308f36fdf1c568c513badc96ddb0c7f040" }
+accesskit_macos = { git = "https://github.com/anomalyco/rune", rev = "958743308f36fdf1c568c513badc96ddb0c7f040" }
