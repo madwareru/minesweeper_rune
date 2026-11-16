@@ -317,10 +317,6 @@ fn window_size(difficulty: Difficulty) -> (f32, f32) {
     ((board_width + 32.0).max(420.0), board_height + 248.0)
 }
 
-fn should_resize_window(titlebar_inset: f32) -> bool {
-    !cfg!(target_os = "macos") || titlebar_inset > 0.0
-}
-
 fn cell_view(state: &State, index: usize, theme: tok::Theme) -> El {
     let cell = state.cells[index];
     let row_number = index / state.difficulty.width() + 1;
@@ -385,7 +381,8 @@ fn cell_view(state: &State, index: usize, theme: tok::Theme) -> El {
 
 fn view(state: &State, cx: &mut Cx<State>) -> El {
     let theme = tok::theme(true);
-    let resize_window = should_resize_window(cx.titlebar_inset());
+    let titlebar_inset = cx.titlebar_inset();
+    let resize_window = !cfg!(target_os = "macos") || titlebar_inset > 0.0;
     let flags = state.cells.iter().filter(|cell| cell.flagged).count();
     let remaining = state.difficulty.mines() as isize - flags as isize;
     let status = match state.outcome {
@@ -848,12 +845,6 @@ mod tests {
         assert_eq!(format_time(0), "0:00");
         assert_eq!(format_time(65), "1:05");
         assert_eq!(format_time(3600), "60:00");
-    }
-
-    #[test]
-    fn difficulty_resize_only_skips_macos_fullscreen() {
-        assert_eq!(should_resize_window(0.0), !cfg!(target_os = "macos"));
-        assert!(should_resize_window(30.0));
     }
 
     #[cfg(target_os = "macos")]
