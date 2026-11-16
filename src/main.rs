@@ -52,11 +52,7 @@ impl Difficulty {
     }
 
     fn index(self) -> usize {
-        match self {
-            Self::Easy => 0,
-            Self::Moderate => 1,
-            Self::Hard => 2,
-        }
+        self as usize
     }
 }
 
