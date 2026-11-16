@@ -2,6 +2,8 @@
 name = "minesweeper_rune"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+authors = ["Vitaly Samotokin"]
 
 [dependencies]
 rune = { git = "https://github.com/anomalyco/rune", rev = "958743308f36fdf1c568c513badc96ddb0c7f040" }
