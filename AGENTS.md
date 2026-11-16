@@ -27,11 +27,7 @@ The first revealed cell and its neighbors are always safe. Primary click reveals
 - `Cargo.toml`: package metadata, the pinned Rune dependency, and git patches for selected transitive dependencies.
 - `Cargo.lock`: resolved application dependencies.
 - `src/main.rs`: the entire game model, UI, entry point, scripted scenes, and test suite.
-- `docs/superpowers/specs/`: feature design documents.
-- `docs/superpowers/plans/`: implementation plans corresponding to the designs.
 - `.gitignore`: excludes `/target`.
-
-The documents record the project's evolution. Older documents intentionally describe earlier scope, such as the original single-difficulty game without a timer or records. Use the current source and the newest difficulty/timer/records design for current behavior; unchecked boxes in historical plans are not a reliable list of remaining work.
 
 There are no separate library, engine, renderer, asset, integration-test, CI, packaging, or deployment directories.
 
@@ -115,7 +111,7 @@ Inspect both the JSON element tree and the rendered PNG when making visual or ac
 - Preserve stable element keys, descriptive labels, button roles, and `focusable(true)` for interactive elements.
 - Reuse `tok::theme(true)` and `tok::accent(...)` colors where possible. Every revealed cell uses `theme.control_track`, while covered cells use `theme.control_track.mix(tok::accent(0, true), 0.1)`. Mine symbols use `rune::Color { r: 1.0, g: 0.25, b: 0.2, a: 1.0 }`, flag symbols use `rune::Color::WHITE`, and numbered cells retain their accent colors.
 - Preserve the documented timer lifecycle: flagging does not start it, win/loss stops it, and New Game or a real difficulty change resets it. Selecting the already-active difficulty is a no-op.
-- Existing feature work is documented with English design and implementation-plan files under `docs/superpowers`; source and UI strings are also in English.
+- Source and UI strings are in English.
 
 ## Security and data considerations
 
