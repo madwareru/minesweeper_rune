@@ -2,7 +2,7 @@
 
 A small native Minesweeper game written in Rust with [Rune](https://github.com/anomalyco/rune).
 
-![Minesweeper after revealing a mine](docs/lost.png)
+<img src="docs/lost.png" alt="Minesweeper after revealing a mine" width="300">
 
 ## Features
 
