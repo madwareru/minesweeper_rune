@@ -40,6 +40,18 @@ pub(crate) fn window_size(difficulty: Difficulty) -> (f32, f32) {
     )
 }
 
+fn fit_window_size(difficulty: Difficulty, current: (f32, f32)) -> Option<(f32, f32)> {
+    let required = window_size(difficulty);
+    (current.0 < required.0 || current.1 < required.1)
+        .then_some((current.0.max(required.0), current.1.max(required.1)))
+}
+
+fn resize_to_fit(difficulty: Difficulty, current: (f32, f32), tx: &mut rune::Tx) {
+    if let Some(size) = fit_window_size(difficulty, current) {
+        tx.resize_window(size);
+    }
+}
+
 fn button_base(key: impl Into<String>) -> El {
     el().role("button")
         .focusable(true)
@@ -118,7 +130,9 @@ fn cell_view(state: &State, index: usize, theme: tok::Theme) -> El {
 pub(crate) fn view(state: &State, cx: &mut Cx<State>) -> El {
     let theme = tok::theme(true);
     let difficulty = state.settings.difficulty;
-    let resize_window = !cfg!(target_os = "macos") || cx.titlebar_inset() > 0.0;
+    let current_size = cx
+        .layout_size("root")
+        .map(|[width, height]| (width, height));
     let flags = state.cells.iter().copied().filter(|it| it.flagged).count();
     let remaining = difficulty.mines() as isize - flags as isize;
     let status = match state.outcome {
@@ -143,10 +157,8 @@ pub(crate) fn view(state: &State, cx: &mut Cx<State>) -> El {
             )
             .on_press_tx(move |state: &mut State, tx| {
                 state.set_difficulty(option);
-                if resize_window {
-                    tx.resize_window(window_size(option));
-                } else {
-                    state.window_resize_pending = true;
+                if let Some(current) = current_size {
+                    resize_to_fit(option, current, tx);
                 }
             })
         }));
@@ -180,17 +192,15 @@ pub(crate) fn view(state: &State, cx: &mut Cx<State>) -> El {
     .on_press(|state: &mut State| state.new_game());
 
     col()
+        .key("root")
         .w_full()
         .h_full()
         .center()
         .gap(SECTION_GAP)
         .padding(ROOT_PADDING)
         .fill(theme.bg)
-        .on_layout_tx(move |state: &mut State, _, tx| {
-            if resize_window && state.window_resize_pending {
-                state.window_resize_pending = false;
-                tx.resize_window(window_size(state.settings.difficulty));
-            }
+        .on_layout_tx(move |state: &mut State, [_, _, width, height], tx| {
+            resize_to_fit(state.settings.difficulty, (width, height), tx);
         })
         .child(text("MINESWEEPER").font(type_::TITLE).color(theme.text))
         .child(
@@ -487,21 +497,16 @@ mod tests {
         assert_eq!(format_time(3600), "60:00");
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
-    fn leaving_fullscreen_applies_pending_difficulty_resize() {
-        let mut runtime = runtime(State::new(1));
-        runtime.set_titlebar_inset(0.0);
-        runtime.set_viewport((1440.0, 900.0), 2.0);
-        runtime.frame(0.0);
-        click(&mut runtime, "difficulty-hard");
-        assert!(runtime.state.window_resize_pending);
-
-        runtime.set_titlebar_inset(30.0);
-        runtime.set_viewport(window_size(Difficulty::Easy), 2.0);
-        runtime.frame(0.0);
-        runtime.frame(0.0);
-        assert!(!runtime.state.window_resize_pending);
+    fn window_fit_only_grows_insufficient_dimensions() {
+        let easy = window_size(Difficulty::Easy);
+        let hard = window_size(Difficulty::Hard);
+        assert_eq!(fit_window_size(Difficulty::Hard, easy), Some(hard));
+        assert_eq!(fit_window_size(Difficulty::Hard, (1440.0, 900.0)), None);
+        assert_eq!(
+            fit_window_size(Difficulty::Hard, (hard.0 - 1.0, 900.0)),
+            Some((hard.0, 900.0))
+        );
     }
 
     #[test]

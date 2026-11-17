@@ -105,7 +105,6 @@ pub(crate) struct GameState {
     pub(crate) finished_at: Option<f64>,
     pub(crate) last_progress_at: Option<f64>,
     pub(crate) hint: Option<Hint>,
-    pub(crate) window_resize_pending: bool,
 }
 
 impl GameState {
