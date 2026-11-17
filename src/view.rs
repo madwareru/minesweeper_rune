@@ -1,6 +1,6 @@
-use crate::model::{Difficulty, Outcome, State};
+use crate::model::{Difficulty, HintKind, Outcome, State};
 use rune::tok::{self, type_};
-use rune::{Color, Cx, El, col, el, row, text};
+use rune::{Color, Cx, El, LoopSpec, col, el, row, text};
 
 const CELL_SIZE: f32 = 36.0;
 const CELL_GAP: f32 = 4.0;
@@ -16,6 +16,9 @@ const NON_BOARD_HEIGHT: f32 = 248.0;
 const NUMBER_ACCENT_COUNT: usize = 6;
 const COVERED_CELL_LIGHTENING: f32 = 0.05;
 const SELECTED_DIFFICULTY_ALPHA: f32 = 0.2;
+const HINT_PERIOD: f64 = 1.0;
+const HINT_MIX: f32 = 0.15;
+const HINT_LOW_OPACITY: f32 = 0.75;
 
 const VIBRANT_RED: Color = Color {
     r: 1.0,
@@ -75,16 +78,26 @@ fn cell_view(state: &State, index: usize, theme: tok::Theme) -> El {
         (_, _, true) => ("flagged".to_owned(), "⚑".to_owned(), Color::WHITE),
         _ => ("covered".to_owned(), "".to_owned(), theme.text),
     };
-    button_base(format!("cell-{index}"))
-        .label(format!("Row {row_number}, column {column}, {description}"))
+    let fill = if cell.revealed {
+        theme.control_track
+    } else {
+        theme
+            .control_track
+            .mix(Color::WHITE, COVERED_CELL_LIGHTENING)
+    };
+    let hint = state.hint.as_ref().filter(|hint| hint.cell == index);
+    let fill = hint.map_or(fill, |_| fill.mix(tok::accent(0, true), HINT_MIX));
+    let hint_label = hint.map_or("", |hint| match hint.kind {
+        HintKind::MineCount => " · hint",
+        HintKind::DoubleClick => " · double-click hint",
+        HintKind::Safe => " · safe cell hint",
+    });
+    let button = button_base(format!("cell-{index}"))
+        .label(format!(
+            "Row {row_number}, column {column}, {description}{hint_label}"
+        ))
         .size(CELL_SIZE, CELL_SIZE)
-        .fill(if cell.revealed {
-            theme.control_track
-        } else {
-            theme
-                .control_track
-                .mix(Color::WHITE, COVERED_CELL_LIGHTENING)
-        })
+        .fill(fill)
         .on_press_tx(move |state: &mut State, tx| {
             state.clock = tx.clock();
             state.reveal(index);
@@ -94,7 +107,12 @@ fn cell_view(state: &State, index: usize, theme: tok::Theme) -> El {
             state.reveal_adjacent(index);
         })
         .on_secondary_press(move |state: &mut State, _, _| state.toggle_flag(index))
-        .child(text(content).font(type_::TITLE).color(color))
+        .child(text(content).font(type_::TITLE).color(color));
+    if hint.is_some() {
+        button.looping(LoopSpec::opacity(HINT_PERIOD, 0.0, HINT_LOW_OPACITY, 1.0))
+    } else {
+        button
+    }
 }
 
 pub(crate) fn view(state: &State, cx: &mut Cx<State>) -> El {
@@ -141,13 +159,15 @@ pub(crate) fn view(state: &State, cx: &mut Cx<State>) -> El {
             )
         }));
     let content = format!("Time {}", format_time(state.elapsed_seconds()));
-    let timer = text(content).key("timer")
-    .font(type_::LABEL.mono())
-    .color(theme.text_secondary);
+    let timer = text(content)
+        .key("timer")
+        .font(type_::LABEL.mono())
+        .color(theme.text_secondary);
     let record = state.records[difficulty.index()]
         .map(|seconds| format!("Best {}", format_time(seconds)))
         .unwrap_or_else(|| "Best —".to_owned());
-    let record = text(record).key("record")
+    let record = text(record)
+        .key("record")
         .font(type_::LABEL.mono())
         .color(theme.text_secondary);
     let new_game = text_button(
@@ -174,7 +194,8 @@ pub(crate) fn view(state: &State, cx: &mut Cx<State>) -> El {
         })
         .child(text("MINESWEEPER").font(type_::TITLE).color(theme.text))
         .child(
-            text(status).key("status")
+            text(status)
+                .key("status")
                 .font(type_::BODY)
                 .color(theme.text_secondary),
         )
@@ -193,7 +214,7 @@ pub(crate) fn view(state: &State, cx: &mut Cx<State>) -> El {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Cell;
+    use crate::model::{Cell, Hint, HintKind};
     use crate::{game::win_at, poll};
     use rune::{Env, Runtime};
 
@@ -218,22 +239,92 @@ mod tests {
         runtime.frame(0.0);
     }
 
-    fn label(runtime: &Runtime<State>, key: &str) -> String {
+    fn element(runtime: &Runtime<State>, key: &str) -> Option<rune::ElementInfo> {
         runtime
             .elements()
             .into_iter()
             .find(|element| element.key.as_deref() == Some(key))
+    }
+
+    fn label(runtime: &Runtime<State>, key: &str) -> String {
+        element(runtime, key)
             .and_then(|element| element.label)
             .unwrap_or_else(|| "not_found".to_owned())
     }
 
     fn text_value(runtime: &Runtime<State>, key: &str) -> String {
-        runtime
-            .elements()
-            .into_iter()
-            .find(|element| element.key.as_deref() == Some(key))
+        element(runtime, key)
             .and_then(|element| element.text)
             .unwrap_or_else(|| "not_found".to_owned())
+    }
+
+    fn fill(runtime: &Runtime<State>, key: &str) -> Color {
+        element(runtime, key).map(|element| element.fill).unwrap()
+    }
+
+    fn opacity(runtime: &Runtime<State>, key: &str) -> f32 {
+        element(runtime, key)
+            .map(|element| element.opacity)
+            .unwrap()
+    }
+
+    fn hinted_state() -> State {
+        let mut state = State::new(1);
+        state.started = true;
+        state.cells[0].revealed = true;
+        state.hint = Some(Hint {
+            cell: 0,
+            kind: HintKind::MineCount,
+        });
+        state
+    }
+
+    #[test]
+    fn hint_pulses_with_configured_period_without_changing_other_cells() {
+        let mut runtime = runtime(hinted_state());
+        let initial_hint = opacity(&runtime, "cell-0");
+        let initial_normal = opacity(&runtime, "cell-1");
+        runtime.frame(HINT_PERIOD / 2.0);
+        assert_ne!(opacity(&runtime, "cell-0"), initial_hint);
+        assert_eq!(opacity(&runtime, "cell-1"), initial_normal);
+        runtime.frame(HINT_PERIOD / 2.0);
+        assert_eq!(opacity(&runtime, "cell-0"), initial_hint);
+    }
+
+    #[test]
+    fn hint_is_exposed_in_accessibility_label() {
+        let runtime = runtime(hinted_state());
+        assert_eq!(label(&runtime, "cell-0"), "Row 1, column 1, clear · hint");
+    }
+
+    #[test]
+    fn hint_labels_describe_double_click_and_safe_cells() {
+        for (kind, revealed, description) in [
+            (HintKind::DoubleClick, true, "clear · double-click hint"),
+            (HintKind::Safe, false, "covered · safe cell hint"),
+        ] {
+            let mut state = hinted_state();
+            state.cells[0].revealed = revealed;
+            state.hint = Some(Hint { cell: 0, kind });
+            let runtime = runtime(state);
+            assert_eq!(
+                label(&runtime, "cell-0"),
+                format!("Row 1, column 1, {description}")
+            );
+        }
+    }
+
+    #[test]
+    fn hint_is_a_static_tint_with_reduced_motion() {
+        let mut runtime = runtime(hinted_state());
+        runtime.set_system_reduced_motion(true);
+        runtime.frame(2.0);
+        let initial = fill(&runtime, "cell-0");
+        let initial_opacity = opacity(&runtime, "cell-0");
+        assert_ne!(initial, tok::theme(true).control_track);
+        runtime.frame(4.0);
+        assert_eq!(fill(&runtime, "cell-0"), initial);
+        assert_eq!(opacity(&runtime, "cell-0"), initial_opacity);
     }
 
     #[test]

@@ -1,4 +1,6 @@
-use crate::model::{Cell, Difficulty, Outcome, State};
+use crate::model::{Cell, Difficulty, Hint, HintKind, Outcome, State};
+
+const HINT_DELAY: f64 = 15.0;
 
 impl State {
     pub(crate) fn reveal(&mut self, index: usize) {
@@ -19,6 +21,8 @@ impl State {
             self.started = true;
         }
 
+        self.note_progress();
+
         if self.check_loss(index) {
             return;
         }
@@ -26,6 +30,110 @@ impl State {
         self.reveal_area_at(index);
 
         self.check_for_win();
+    }
+
+    fn note_progress(&mut self) {
+        self.last_progress_at = Some(self.clock);
+        self.hint = None;
+    }
+
+    pub(crate) fn update_hint(&mut self) {
+        if !self.started || self.outcome != Outcome::Playing {
+            self.hint = None;
+            return;
+        }
+        if self.hint.is_some()
+            || self
+                .last_progress_at
+                .is_none_or(|last| self.clock - last < HINT_DELAY)
+        {
+            return;
+        }
+
+        self.hint = self.hint_candidate();
+    }
+
+    fn hint_candidate(&self) -> Option<Hint> {
+        let candidates: [(fn(&State) -> Option<usize>, HintKind); 3] = [
+            (Self::mine_count_hint, HintKind::MineCount),
+            (Self::double_click_hint, HintKind::DoubleClick),
+            (Self::safe_cell_hint, HintKind::Safe),
+        ];
+        candidates
+            .into_iter()
+            .find_map(|(candidate, kind)| candidate(self).map(|cell| Hint { cell, kind }))
+    }
+
+    fn mine_count_hint(&self) -> Option<usize> {
+        self.cells
+            .iter()
+            .enumerate()
+            .find(|(index, cell)| {
+                if !cell.revealed || cell.mine || cell.adjacent == 0 {
+                    return false;
+                }
+
+                let mut covered = 0;
+                let mut has_unflagged = false;
+                for neighbor in neighbors(self.settings.difficulty, *index) {
+                    let neighbor = self.cells[neighbor];
+                    if !neighbor.revealed {
+                        covered += 1;
+                        has_unflagged |= !neighbor.flagged;
+                    }
+                }
+                has_unflagged && covered == cell.adjacent
+            })
+            .map(|(index, _)| index)
+    }
+
+    fn double_click_hint(&self) -> Option<usize> {
+        self.cells
+            .iter()
+            .enumerate()
+            .find(|(index, cell)| {
+                if !cell.revealed || cell.mine || cell.adjacent == 0 {
+                    return false;
+                }
+
+                let mut flags = 0;
+                let mut has_unflagged = false;
+                for neighbor in neighbors(self.settings.difficulty, *index) {
+                    let neighbor = self.cells[neighbor];
+                    flags += u8::from(neighbor.flagged);
+                    has_unflagged |= !neighbor.revealed && !neighbor.flagged;
+                }
+                flags == cell.adjacent && has_unflagged
+            })
+            .map(|(index, _)| index)
+    }
+
+    fn safe_cell_hint(&self) -> Option<usize> {
+        self.cells
+            .iter()
+            .enumerate()
+            .filter(|(index, cell)| {
+                !cell.revealed
+                    && !cell.mine
+                    && !cell.flagged
+                    && neighbors(self.settings.difficulty, *index).any(|neighbor| {
+                        let neighbor = self.cells[neighbor];
+                        neighbor.revealed && !neighbor.mine
+                    })
+            })
+            .max_by_key(|(index, cell)| {
+                let covered = neighbors(self.settings.difficulty, *index)
+                    .filter(|neighbor| !self.cells[*neighbor].revealed)
+                    .count();
+                let revealed = neighbors(self.settings.difficulty, *index)
+                    .filter(|neighbor| {
+                        let neighbor = self.cells[*neighbor];
+                        neighbor.revealed && !neighbor.mine
+                    })
+                    .count();
+                (covered == usize::from(cell.adjacent), revealed)
+            })
+            .map(|(index, _)| index)
     }
 
     fn check_for_win(&mut self) {
@@ -112,6 +220,7 @@ impl State {
             && !self.cells[index].revealed
         {
             self.cells[index].switch_flag();
+            self.note_progress();
         }
     }
 
@@ -125,6 +234,8 @@ impl State {
         self.settings.seed = self.settings.seed.wrapping_add(1);
         self.started_at = None;
         self.finished_at = None;
+        self.last_progress_at = None;
+        self.hint = None;
     }
 
     pub(crate) fn set_difficulty(&mut self, difficulty: Difficulty) {
@@ -208,7 +319,182 @@ pub(crate) fn win_at(state: &mut State, seconds: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::HintKind;
     use rune::prefs::Prefs;
+
+    fn inactive_state() -> State {
+        let mut state = State::new(1);
+        state.started = true;
+        state.last_progress_at = Some(0.0);
+        state.clock = 15.0;
+        state
+    }
+
+    fn hint_state() -> State {
+        let mut state = inactive_state();
+        for neighbor in neighbors(Difficulty::Easy, 40) {
+            state.cells[neighbor].revealed = true;
+        }
+        state.cells[40].revealed = true;
+        state.cells[40].adjacent = 1;
+        state.cells[30].revealed = false;
+        state
+    }
+
+    #[test]
+    fn hint_appears_at_the_inactivity_threshold_using_visible_information() {
+        let mut state = hint_state();
+        state.clock = 14.999;
+        state.update_hint();
+        assert!(state.hint.is_none());
+
+        state.clock = 15.0;
+        state.update_hint();
+        let hint = state.hint.as_ref().unwrap();
+        assert_eq!(hint.cell, 40);
+        assert_eq!(hint.kind, HintKind::MineCount);
+        assert!(state.cells.iter().all(|cell| !cell.mine));
+    }
+
+    #[test]
+    fn hint_candidates_count_flags_but_skip_fully_flagged_numbers() {
+        let mut state = inactive_state();
+        state.cells.fill(Cell {
+            revealed: true,
+            ..Cell::default()
+        });
+        state.cells[40].adjacent = 1;
+        state.cells[41].adjacent = 1;
+        state.cells[30].revealed = false;
+        state.cells[30].flagged = true;
+        state.cells[42].revealed = false;
+
+        state.update_hint();
+        assert_eq!(state.hint.as_ref().map(|hint| hint.cell), Some(41));
+    }
+
+    #[test]
+    fn hint_falls_back_to_an_actionable_double_click() {
+        let mut state = inactive_state();
+        state.cells[40].revealed = true;
+        state.cells[40].adjacent = 1;
+        state.cells[30].flagged = true;
+
+        state.update_hint();
+        let hint = state.hint.as_ref().unwrap();
+        assert_eq!(hint.cell, 40);
+        assert_eq!(hint.kind, HintKind::DoubleClick);
+    }
+
+    #[test]
+    fn hint_double_click_requires_an_unflagged_covered_cell() {
+        let mut state = inactive_state();
+        for neighbor in neighbors(Difficulty::Easy, 40) {
+            state.cells[neighbor].revealed = true;
+        }
+        state.cells[40].revealed = true;
+        state.cells[40].adjacent = 1;
+        state.cells[30].revealed = false;
+        state.cells[30].flagged = true;
+
+        state.update_hint();
+        assert_eq!(state.hint.as_ref().unwrap().kind, HintKind::Safe);
+    }
+
+    #[test]
+    fn hint_falls_back_to_an_unflagged_safe_boundary_cell() {
+        let mut state = inactive_state();
+        state.cells[40].revealed = true;
+        state.cells[30].mine = true;
+        state.cells[31].flagged = true;
+
+        state.update_hint();
+        let hint = state.hint.as_ref().unwrap();
+        assert_eq!(hint.kind, HintKind::Safe);
+        assert!(!state.cells[hint.cell].mine);
+        assert!(!state.cells[hint.cell].flagged);
+        assert!(neighbors(Difficulty::Easy, 40).any(|index| index == hint.cell));
+    }
+
+    #[test]
+    fn safe_hint_prefers_the_cell_with_most_revealed_neighbors() {
+        let mut state = inactive_state();
+        for index in [40, 41, 49] {
+            state.cells[index].revealed = true;
+        }
+
+        state.update_hint();
+        let hint = state.hint.as_ref().unwrap();
+        assert_eq!(hint.cell, 50);
+        assert_eq!(hint.kind, HintKind::Safe);
+    }
+
+    #[test]
+    fn safe_hint_prioritizes_covered_count_matching_adjacent_mines() {
+        let mut state = inactive_state();
+        for index in [40, 41, 49] {
+            state.cells[index].revealed = true;
+        }
+        state.cells[30].adjacent = 7;
+
+        state.update_hint();
+        let hint = state.hint.as_ref().unwrap();
+        assert_eq!(hint.cell, 30);
+        assert_eq!(hint.kind, HintKind::Safe);
+    }
+
+    #[test]
+    fn hint_is_stable_and_only_real_progress_resets_it() {
+        let mut state = hint_state();
+        state.clock = 15.0;
+        state.update_hint();
+        state.clock = 30.0;
+        state.update_hint();
+        assert_eq!(state.hint.as_ref().unwrap().cell, 40);
+
+        state.reveal(40);
+        state.toggle_flag(40);
+        state.reveal(state.cells.len());
+        state.toggle_flag(state.cells.len());
+        assert_eq!(state.last_progress_at, Some(0.0));
+
+        state.toggle_flag(30);
+        assert!(state.hint.is_none());
+        assert_eq!(state.last_progress_at, Some(30.0));
+
+        state.clock = 40.0;
+        state.toggle_flag(30);
+        assert_eq!(state.last_progress_at, Some(40.0));
+        state.clock = 55.0;
+        state.update_hint();
+        assert_eq!(state.hint.as_ref().unwrap().cell, 40);
+
+        state.reveal(30);
+        assert!(state.hint.is_none());
+        assert_eq!(state.last_progress_at, Some(55.0));
+    }
+
+    #[test]
+    fn hint_clears_for_new_and_finished_games() {
+        let mut state = hint_state();
+        state.clock = 15.0;
+        state.update_hint();
+        assert!(state.hint.is_some());
+
+        state.outcome = Outcome::Lost;
+        state.update_hint();
+        assert!(state.hint.is_none());
+
+        state.outcome = Outcome::Playing;
+        state.update_hint();
+        assert!(state.hint.is_some());
+        state.new_game();
+        assert!(state.hint.is_none());
+        assert_eq!(state.last_progress_at, None);
+        state.clock = 100.0;
+        state.update_hint();
+        assert!(state.hint.is_none());
+    }
 
     #[test]
     fn reveal_adjacent_requires_a_matching_flag_count() {

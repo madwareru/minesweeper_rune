@@ -9,6 +9,7 @@ use view::{view, window_size};
 fn poll(state: &mut State, now: f64, tx: &mut rune::Tx) -> bool {
     state.clock = now;
     if state.started && state.outcome == model::Outcome::Playing {
+        state.update_hint();
         tx.wake_after(std::time::Duration::from_secs(1));
         true
     } else {

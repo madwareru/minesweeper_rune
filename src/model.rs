@@ -83,6 +83,18 @@ pub(crate) struct Settings {
     pub(crate) seed: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HintKind {
+    MineCount,
+    DoubleClick,
+    Safe,
+}
+
+pub(crate) struct Hint {
+    pub(crate) cell: usize,
+    pub(crate) kind: HintKind,
+}
+
 #[derive(Default)]
 pub(crate) struct GameState {
     pub(crate) cells: Vec<Cell>,
@@ -91,6 +103,8 @@ pub(crate) struct GameState {
     pub(crate) clock: f64,
     pub(crate) started_at: Option<f64>,
     pub(crate) finished_at: Option<f64>,
+    pub(crate) last_progress_at: Option<f64>,
+    pub(crate) hint: Option<Hint>,
     pub(crate) window_resize_pending: bool,
 }
 
