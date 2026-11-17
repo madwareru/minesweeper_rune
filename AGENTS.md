@@ -2,7 +2,7 @@
 
 ## Project overview
 
-This repository is a small native desktop Minesweeper game. It builds one executable, `minesweeper_rune`, from `src/main.rs`.
+This repository is a small native desktop Minesweeper game. It builds one executable, `minesweeper_rune`, from the Rust sources in `src/`.
 
 The technology stack is:
 
@@ -26,7 +26,10 @@ The first revealed cell and its neighbors are always safe. Primary click reveals
 
 - `Cargo.toml`: package metadata, the pinned Rune dependency, and git patches for selected transitive dependencies.
 - `Cargo.lock`: resolved application dependencies.
-- `src/main.rs`: the entire game model, UI, entry point, scripted scenes, and test suite.
+- `src/main.rs`: application entry point, lifecycle polling, and scripted scenes.
+- `src/model.rs`: all data definitions, state construction, and `State`/`GameState` delegation.
+- `src/game.rs`: UI-free gameplay logic and game-rule tests.
+- `src/view.rs`: Rune rendering, interaction handlers, and headless UI tests.
 - `.gitignore`: excludes `/target`.
 
 There are no separate library, engine, renderer, asset, integration-test, CI, packaging, or deployment directories.
@@ -35,15 +38,13 @@ There are no separate library, engine, renderer, asset, integration-test, CI, pa
 
 `main()` calls `rune::run` with an `AppSpec<State>`. `AppSpec::new` connects the window title and size, `State::default`, and the root `view` function. The `poll` hook advances the logical clock and requests a one-second wake while a game is active. Named `AppSpec::scenes` (`revealed`, `flagged`, `lost`, and `won`) set up deterministic states for Rune's headless tools.
 
-All code is currently organized within `src/main.rs`:
+The code is organized by responsibility:
 
-- `Difficulty` defines board dimensions, mine counts, display names, record keys, and record-array indices.
-- `Cell`, `Outcome`, `Settings`, and `GameState` hold the model. Cells are stored row-major in a `Vec<Cell>`; an index is `y * width + x`. `State` implements `Deref<Target = GameState>` and `DerefMut`, so game fields are accessed directly through `State`.
-- `State::reveal`, `reveal_adjacent`, `toggle_flag`, `new_game`, `set_difficulty`, and `place_mines` implement gameplay.
-- `neighbors` performs bounds-checked orthogonal and diagonal neighbor iteration for the active difficulty.
+- `model.rs` defines `Difficulty`, `Cell`, `Outcome`, `Settings`, `GameState`, and `State`. `Difficulty` defines board dimensions, mine counts, display names, record keys, and record-array indices. Cells are stored row-major in a `Vec<Cell>`; an index is `y * width + x`. `State` implements `Deref<Target = GameState>` and `DerefMut`, so game fields are accessed directly through `State`.
+- `game.rs` implements `State::reveal`, `reveal_adjacent`, `toggle_flag`, `new_game`, `set_difficulty`, and `place_mines`. Its `neighbors` helper performs bounds-checked orthogonal and diagonal neighbor iteration for the active difficulty.
 - Mine placement is deferred until the first reveal. A small deterministic wrapping PRNG selects mines outside the first cell's safe neighborhood; resets increment the seed. Empty-cell expansion uses an explicit stack rather than recursion.
-- `poll`, `elapsed_seconds`, and `format_time` implement timing with Rune's logical clock, not wall-clock reads.
-- `cell_view` renders one accessible, focusable button per cell. `view` builds the title, status, difficulty controls, board, timer, New Game button, and record display from Rune elements and `rune::tok` theme values.
+- `poll`, `GameState::elapsed_seconds`, and `view::format_time` implement timing with Rune's logical clock, not wall-clock reads.
+- `view.rs` renders one accessible, focusable button per cell through `cell_view`. `view` builds the title, status, difficulty controls, board, timer, New Game button, and record display from Rune elements and `rune::tok` theme values.
 - Event handlers mutate `State`; transaction-aware reveal handlers read the clock from `Tx`. Difficulty handlers use `Tx::resize_window` immediately in a window, but defer it during macOS fullscreen (reported by a zero `Cx::titlebar_inset`) and apply it once on the windowed root layout.
 
 `State::default` opens Rune preferences with application ID `com.madware.minesweeper`. Records use keys `best_easy`, `best_moderate`, and `best_hard`. Only a winning time that improves the current difficulty's record replaces it. Writes are best-effort by design; the in-memory record still updates if persistence fails. Starting a new game or changing difficulty preserves records.
@@ -80,7 +81,7 @@ cargo test
 cargo test first_click_is_safe
 ```
 
-Tests live in `src/main.rs` under `#[cfg(test)]`; there is no separate `tests/` directory. They cover game rules and real headless UI interactions through `rune::Runtime`.
+Tests live beside the code they cover: game-rule and record tests in `src/game.rs`, and headless UI tests in `src/view.rs`, under `#[cfg(test)]`. There is no separate `tests/` directory. UI tests exercise real interactions through `rune::Runtime`.
 
 When changing the project:
 
@@ -103,7 +104,7 @@ Inspect both the JSON element tree and the rendered PNG when making visual or ac
 
 ## Code style and development conventions
 
-- Keep the implementation small and direct. The established design deliberately keeps model, view, and tests in `src/main.rs`; split a module only when a focused separation is clearly useful.
+- Keep the implementation small and direct. Keep data definitions in `model.rs`, UI-free gameplay in `game.rs`, Rune rendering and interaction in `view.rs`, and application wiring in `main.rs`. Keep tests beside the module whose behavior they cover.
 - Do not add dependencies beyond Rune without a concrete requirement. Game randomness, flood fill, timing, and storage already use the standard library or Rune facilities.
 - Follow existing Rust naming and rustfmt defaults.
 - Reuse `State::reveal` for adjacent-cell reveal so flood fill, loss, and win handling do not diverge.
