@@ -27,10 +27,6 @@ fn button_base(key: impl Into<String>) -> El {
         .key(key)
 }
 
-fn keyed_text(key: impl Into<String>, content: impl Into<String>) -> El {
-    text(content).key(key)
-}
-
 fn cell_view(state: &State, index: usize, theme: tok::Theme) -> El {
     let cell = state.cells[index];
     let row_number = index / state.settings.difficulty.width() + 1;
@@ -110,7 +106,7 @@ pub(crate) fn view(state: &State, cx: &mut Cx<State>) -> El {
     let record = state.records[difficulty.index()]
         .map(|seconds| format!("Best {}", format_time(seconds)))
         .unwrap_or_else(|| "Best —".to_owned());
-    let record = keyed_text("record", record)
+    let record = text(record).key("record")
         .font(type_::LABEL.mono())
         .color(theme.text_secondary);
     let new_game = button_base("new-game")
