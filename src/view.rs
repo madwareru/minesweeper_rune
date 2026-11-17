@@ -14,10 +14,9 @@ const ROOT_PADDING: f32 = 16.0;
 const MIN_WINDOW_WIDTH: f32 = 420.0;
 const NON_BOARD_HEIGHT: f32 = 248.0;
 const NUMBER_ACCENT_COUNT: usize = 6;
-const COVERED_CELL_LIGHTENING: f32 = 0.05;
+const COVERED_CELL_ALPHA: f32 = 0.2;
 const SELECTED_DIFFICULTY_ALPHA: f32 = 0.2;
 const HINT_PERIOD: f64 = 1.0;
-const HINT_MIX: f32 = 0.15;
 const HINT_LOW_OPACITY: f32 = 0.75;
 
 const VIBRANT_RED: Color = Color {
@@ -90,15 +89,17 @@ fn cell_view(state: &State, index: usize, theme: tok::Theme) -> El {
         (_, _, true) => ("flagged".to_owned(), "⚑".to_owned(), Color::WHITE),
         _ => ("covered".to_owned(), "".to_owned(), theme.text),
     };
-    let fill = if cell.revealed {
-        theme.control_track
-    } else {
-        theme
-            .control_track
-            .mix(Color::WHITE, COVERED_CELL_LIGHTENING)
-    };
+
     let hint = state.hint.as_ref().filter(|hint| hint.cell == index);
-    let fill = hint.map_or(fill, |_| fill.mix(tok::accent(0, true), HINT_MIX));
+    let mut alpha = COVERED_CELL_ALPHA;
+    if cell.revealed {
+        alpha /= 2.0;
+    }
+    if hint.is_some() {
+        alpha += 0.1;
+    }
+
+    let fill = tok::accent(0, true).alpha(alpha);
     let hint_label = hint.map_or("", |hint| match hint.kind {
         HintKind::MineCount => " · hint",
         HintKind::DoubleClick => " · double-click hint",
@@ -434,11 +435,11 @@ mod tests {
                 .unwrap()
                 .text_color
         };
-        let covered = tok::theme(true).control_track.mix(Color::WHITE, 0.05);
+        let covered = tok::accent(0, true).alpha(COVERED_CELL_ALPHA);
         assert_eq!(fill("cell-2"), covered);
         assert_eq!(fill("cell-3"), covered);
         for key in ["cell-0", "cell-1", "cell-4"] {
-            assert_eq!(fill(key), tok::theme(true).control_track);
+            assert_eq!(fill(key), tok::accent(0, true).alpha(COVERED_CELL_ALPHA / 2.0));
         }
         assert_eq!(text_color("cell-4"), Some(VIBRANT_RED));
         assert_eq!(text_color("cell-3"), Some(Color::WHITE));

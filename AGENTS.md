@@ -112,7 +112,7 @@ Inspect both the JSON element tree and the rendered PNG when making visual or ac
 - Reuse `State::reveal` for adjacent-cell reveal so flood fill, loss, and win handling do not diverge.
 - Keep board calculations based on the active `Difficulty` and `cells.len()`; do not reintroduce fixed Easy-board assumptions.
 - Preserve stable element keys, descriptive labels, button roles, and `focusable(true)` for interactive elements.
-- Reuse `tok::theme(true)` and `tok::accent(...)` colors where possible. Every revealed cell uses `theme.control_track`, while covered cells use `theme.control_track.mix(tok::accent(0, true), 0.1)`. Mine symbols use `rune::Color { r: 1.0, g: 0.25, b: 0.2, a: 1.0 }`, flag symbols use `rune::Color::WHITE`, and numbered cells retain their accent colors.
+- Reuse `tok::theme(true)` and `tok::accent(...)` colors where possible. Every cell fill uses `tok::accent(0, true)` with alpha `0.2` when covered and `0.1` when revealed; hints add `0.1` alpha. Mine symbols use `rune::Color { r: 1.0, g: 0.05, b: 0.02, a: 1.0 }`, flag symbols use `rune::Color::WHITE`, and numbered cells retain their accent colors.
 - Preserve the documented timer lifecycle: flagging does not start it, win/loss stops it, and New Game or a real difficulty change resets it. Selecting the already-active difficulty is a no-op.
 - Source and UI strings are in English.
 

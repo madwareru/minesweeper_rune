@@ -9,6 +9,7 @@ A small native Minesweeper game written in Rust with [Rune](https://github.com/a
 - Easy, Moderate, and Hard difficulty modes
 - Safe first move and automatic empty-cell expansion
 - Timer and the persistent best time for each difficulty
+- Subtle hints after 15 seconds without progress, highlighting useful numbers, double-click opportunities, or safe cells
 - Keyboard-accessible cells and controls
 
 ## Controls
