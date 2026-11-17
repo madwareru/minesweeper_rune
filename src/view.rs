@@ -2,6 +2,21 @@ use crate::model::{Difficulty, Outcome, State};
 use rune::tok::{self, type_};
 use rune::{Color, Cx, El, col, el, row, text};
 
+const CELL_SIZE: f32 = 36.0;
+const CELL_GAP: f32 = 4.0;
+const CONTROL_HEIGHT: f32 = 36.0;
+const DIFFICULTY_BUTTON_WIDTH: f32 = 100.0;
+const NEW_GAME_BUTTON_WIDTH: f32 = 120.0;
+const CORNER_RADIUS: f32 = 6.0;
+const CONTROL_GAP: f32 = 8.0;
+const SECTION_GAP: f32 = 16.0;
+const ROOT_PADDING: f32 = 16.0;
+const MIN_WINDOW_WIDTH: f32 = 420.0;
+const NON_BOARD_HEIGHT: f32 = 248.0;
+const NUMBER_ACCENT_COUNT: usize = 6;
+const COVERED_CELL_LIGHTENING: f32 = 0.05;
+const SELECTED_DIFFICULTY_ALPHA: f32 = 0.2;
+
 const VIBRANT_RED: Color = Color {
     r: 1.0,
     g: 0.05,
@@ -14,41 +29,61 @@ fn format_time(seconds: u64) -> String {
 }
 
 pub(crate) fn window_size(difficulty: Difficulty) -> (f32, f32) {
-    let board_width = difficulty.width() as f32 * 40.0 - 4.0;
-    let board_height = difficulty.height() as f32 * 40.0 - 4.0;
-    ((board_width + 32.0).max(420.0), board_height + 248.0)
+    let board_width = difficulty.width() as f32 * (CELL_SIZE + CELL_GAP) - CELL_GAP;
+    let board_height = difficulty.height() as f32 * (CELL_SIZE + CELL_GAP) - CELL_GAP;
+    (
+        (board_width + ROOT_PADDING * 2.0).max(MIN_WINDOW_WIDTH),
+        board_height + NON_BOARD_HEIGHT,
+    )
 }
 
 fn button_base(key: impl Into<String>) -> El {
     el().role("button")
         .focusable(true)
         .center()
-        .radius(6.0)
+        .radius(CORNER_RADIUS)
         .key(key)
+}
+
+fn text_button(
+    key: impl Into<String>,
+    label: &'static str,
+    width: f32,
+    fill: Color,
+    text_color: Color,
+) -> El {
+    button_base(key)
+        .label(label)
+        .size(width, CONTROL_HEIGHT)
+        .fill(fill)
+        .child(text(label).font(type_::LABEL).color(text_color))
 }
 
 fn cell_view(state: &State, index: usize, theme: tok::Theme) -> El {
     let cell = state.cells[index];
-    let row_number = index / state.settings.difficulty.width() + 1;
-    let column = index % state.settings.difficulty.width() + 1;
+    let difficulty = state.settings.difficulty;
+    let row_number = index / difficulty.width() + 1;
+    let column = index % difficulty.width() + 1;
     let (description, content, color) = match (cell.revealed, cell.mine, cell.flagged) {
         (true, true, _) => ("mine".to_owned(), "●".to_owned(), VIBRANT_RED),
         (true, _, _) if cell.adjacent == 0 => ("clear".to_owned(), "".to_owned(), theme.text),
         (true, _, _) => (
             format!("{} adjacent mines", cell.adjacent),
             format!("{}", cell.adjacent),
-            tok::accent((cell.adjacent as usize + 6 - 1) % 6, true),
+            tok::accent((usize::from(cell.adjacent) - 1) % NUMBER_ACCENT_COUNT, true),
         ),
         (_, _, true) => ("flagged".to_owned(), "⚑".to_owned(), Color::WHITE),
         _ => ("covered".to_owned(), "".to_owned(), theme.text),
     };
     button_base(format!("cell-{index}"))
         .label(format!("Row {row_number}, column {column}, {description}"))
-        .size(36.0, 36.0)
+        .size(CELL_SIZE, CELL_SIZE)
         .fill(if cell.revealed {
             theme.control_track
         } else {
-            theme.control_track.mix(Color::WHITE, 0.05)
+            theme
+                .control_track
+                .mix(Color::WHITE, COVERED_CELL_LIGHTENING)
         })
         .on_press_tx(move |state: &mut State, tx| {
             state.clock = tx.clock();
@@ -64,64 +99,72 @@ fn cell_view(state: &State, index: usize, theme: tok::Theme) -> El {
 
 pub(crate) fn view(state: &State, cx: &mut Cx<State>) -> El {
     let theme = tok::theme(true);
+    let difficulty = state.settings.difficulty;
     let resize_window = !cfg!(target_os = "macos") || cx.titlebar_inset() > 0.0;
     let flags = state.cells.iter().copied().filter(|it| it.flagged).count();
-    let remaining = state.settings.difficulty.mines() as isize - flags as isize;
+    let remaining = difficulty.mines() as isize - flags as isize;
     let status = match state.outcome {
         Outcome::Playing if !state.started => format!("{remaining} mines · Left-click to start"),
         Outcome::Playing => format!("{remaining} mines left"),
         Outcome::Won => "You won! · All safe cells revealed".to_owned(),
         Outcome::Lost => "Boom! · Try a new game".to_owned(),
     };
-    let difficulties = row().gap(8.0).children(Difficulty::ALL.map(|difficulty| {
-        button_base(format!("difficulty-{}", difficulty.name().to_lowercase()))
-            .label(difficulty.name())
-            .size(100.0, 36.0)
-            .fill(if state.settings.difficulty == difficulty {
-                tok::accent(0, true).alpha(0.2)
-            } else {
-                theme.card
-            })
+    let difficulties = row()
+        .gap(CONTROL_GAP)
+        .children(Difficulty::ALL.map(|option| {
+            text_button(
+                format!("difficulty-{}", option.name().to_lowercase()),
+                option.name(),
+                DIFFICULTY_BUTTON_WIDTH,
+                if difficulty == option {
+                    tok::accent(0, true).alpha(SELECTED_DIFFICULTY_ALPHA)
+                } else {
+                    theme.card
+                },
+                theme.text,
+            )
             .on_press_tx(move |state: &mut State, tx| {
-                state.set_difficulty(difficulty);
+                state.set_difficulty(option);
                 if resize_window {
-                    tx.resize_window(window_size(difficulty));
+                    tx.resize_window(window_size(option));
                 } else {
                     state.window_resize_pending = true;
                 }
             })
-            .child(text(difficulty.name()).font(type_::LABEL).color(theme.text))
-    }));
-    let difficulty = state.settings.difficulty;
-    let board = col().gap(4.0).children((0..difficulty.height()).map(|y| {
-        row().gap(4.0).children(
-            (0..difficulty.width())
-                .map(move |x| cell_view(state, y * difficulty.width() + x, theme)),
-        )
-    }));
-    let timer = text(format!("Time {}", format_time(state.elapsed_seconds())))
-        .key("timer")
-        .font(type_::LABEL.mono())
-        .color(theme.text_secondary);
+        }));
+    let board = col()
+        .gap(CELL_GAP)
+        .children((0..difficulty.height()).map(|y| {
+            row().gap(CELL_GAP).children(
+                (0..difficulty.width())
+                    .map(move |x| cell_view(state, y * difficulty.width() + x, theme)),
+            )
+        }));
+    let content = format!("Time {}", format_time(state.elapsed_seconds()));
+    let timer = text(content).key("timer")
+    .font(type_::LABEL.mono())
+    .color(theme.text_secondary);
     let record = state.records[difficulty.index()]
         .map(|seconds| format!("Best {}", format_time(seconds)))
         .unwrap_or_else(|| "Best —".to_owned());
     let record = text(record).key("record")
         .font(type_::LABEL.mono())
         .color(theme.text_secondary);
-    let new_game = button_base("new-game")
-        .label("New Game")
-        .size(120.0, 36.0)
-        .fill(theme.card)
-        .on_press(|state: &mut State| state.new_game())
-        .child(text("New Game").font(type_::LABEL).color(theme.text));
+    let new_game = text_button(
+        "new-game",
+        "New Game",
+        NEW_GAME_BUTTON_WIDTH,
+        theme.card,
+        theme.text,
+    )
+    .on_press(|state: &mut State| state.new_game());
 
     col()
         .w_full()
         .h_full()
         .center()
-        .gap(16.0)
-        .padding(16.0)
+        .gap(SECTION_GAP)
+        .padding(ROOT_PADDING)
         .fill(theme.bg)
         .on_layout_tx(move |state: &mut State, _, tx| {
             if resize_window && state.window_resize_pending {
@@ -131,8 +174,7 @@ pub(crate) fn view(state: &State, cx: &mut Cx<State>) -> El {
         })
         .child(text("MINESWEEPER").font(type_::TITLE).color(theme.text))
         .child(
-            text(status)
-                .key("status")
+            text(status).key("status")
                 .font(type_::BODY)
                 .color(theme.text_secondary),
         )
@@ -140,7 +182,7 @@ pub(crate) fn view(state: &State, cx: &mut Cx<State>) -> El {
         .child(board)
         .child(
             row()
-                .gap(16.0)
+                .gap(SECTION_GAP)
                 .center()
                 .child(timer)
                 .child(new_game)
