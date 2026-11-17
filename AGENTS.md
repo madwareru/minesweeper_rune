@@ -38,7 +38,7 @@ There are no separate library, engine, renderer, asset, integration-test, CI, pa
 All code is currently organized within `src/main.rs`:
 
 - `Difficulty` defines board dimensions, mine counts, display names, record keys, and record-array indices.
-- `Cell`, `Outcome`, and `State` hold the model. Cells are stored row-major in a `Vec<Cell>`; an index is `y * width + x`.
+- `Cell`, `Outcome`, `Settings`, and `GameState` hold the model. Cells are stored row-major in a `Vec<Cell>`; an index is `y * width + x`. `State` implements `Deref<Target = GameState>` and `DerefMut`, so game fields are accessed directly through `State`.
 - `State::reveal`, `reveal_adjacent`, `toggle_flag`, `new_game`, `set_difficulty`, and `place_mines` implement gameplay.
 - `neighbors` performs bounds-checked orthogonal and diagonal neighbor iteration for the active difficulty.
 - Mine placement is deferred until the first reveal. A small deterministic wrapping PRNG selects mines outside the first cell's safe neighborhood; resets increment the seed. Empty-cell expansion uses an explicit stack rather than recursion.

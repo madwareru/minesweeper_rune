@@ -1,6 +1,6 @@
 use rune::prefs::Prefs;
 use rune::tok::{self, type_};
-use rune::{AppSpec, Cx, El, col, el, row, text, Color};
+use rune::{AppSpec, Color, Cx, El, col, el, row, text};
 
 const VIBRANT_RED: Color = Color {
     r: 1.0,
@@ -120,6 +120,20 @@ struct State {
     tmp_buffer: Vec<usize>,
 }
 
+impl std::ops::Deref for State {
+    type Target = GameState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.game_state
+    }
+}
+
+impl std::ops::DerefMut for State {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.game_state
+    }
+}
+
 impl State {
     #[cfg(test)]
     fn new(seed: u64) -> Self {
@@ -129,7 +143,10 @@ impl State {
     fn with_prefs(seed: u64, prefs: Prefs) -> Self {
         let records = Difficulty::ALL.map(|difficulty| prefs.get(difficulty.record_key()));
         Self {
-            settings: Settings{ seed, ..Default::default() } ,
+            settings: Settings {
+                seed,
+                ..Default::default()
+            },
             game_state: GameState {
                 cells: vec![Cell::default(); Difficulty::Easy.width() * Difficulty::Easy.height()],
                 ..Default::default()
@@ -141,21 +158,21 @@ impl State {
     }
 
     fn reveal(&mut self, index: usize) {
-        if self.game_state.outcome != Outcome::Playing {
+        if self.outcome != Outcome::Playing {
             return;
         }
-        if index >= self.game_state.cells.len() {
+        if index >= self.cells.len() {
             return;
         }
-        let self1 = &self.game_state.cells[index];
-        if self1.revealed || self1.flagged {
+        let cell = &self.cells[index];
+        if cell.revealed || cell.flagged {
             return;
         }
 
-        if !self.game_state.started {
-            self.game_state.started_at = Some(self.game_state.clock);
+        if !self.started {
+            self.started_at = Some(self.clock);
             self.place_mines(index);
-            self.game_state.started = true;
+            self.started = true;
         }
 
         if self.check_loss(index) {
@@ -169,21 +186,22 @@ impl State {
 
     fn check_for_win(&mut self) {
         let cells_revealed = self
-            .game_state
             .cells
             .iter()
             .filter(|cell| cell.revealed && !cell.mine)
             .count();
-        let cells_to_reveal_for_win = self.game_state.cells.len() - self.settings.difficulty.mines();
+        let cells_to_reveal_for_win = self.cells.len() - self.settings.difficulty.mines();
 
         if cells_revealed == cells_to_reveal_for_win {
-            self.game_state.outcome = Outcome::Won;
-            self.game_state.finished_at = Some(self.game_state.clock);
-            let seconds = self.game_state.elapsed_seconds();
+            self.outcome = Outcome::Won;
+            self.finished_at = Some(self.clock);
+            let seconds = self.elapsed_seconds();
             let index = self.settings.difficulty.index();
             if self.records[index].is_none_or(|best| seconds < best) {
                 self.records[index] = Some(seconds);
-                let _ = self.prefs.set(self.settings.difficulty.record_key(), &seconds);
+                let _ = self
+                    .prefs
+                    .set(self.settings.difficulty.record_key(), &seconds);
             }
         }
     }
@@ -193,44 +211,45 @@ impl State {
         self.tmp_buffer.push(index);
 
         while let Some(current) = self.tmp_buffer.pop() {
-            let cell = &mut self.game_state.cells[current];
+            let cell = &mut self.cells[current];
             if cell.revealed || cell.flagged || cell.mine {
                 continue;
             }
 
             cell.revealed = true;
             if cell.adjacent == 0 {
-                self.tmp_buffer.extend(neighbors(self.settings.difficulty, current));
+                self.tmp_buffer
+                    .extend(neighbors(self.settings.difficulty, current));
             }
         }
     }
 
     fn check_loss(&mut self, index: usize) -> bool {
-        if !self.game_state.cells[index].mine {
+        if !self.cells[index].mine {
             return false;
         }
 
-        for mine_cell in self.game_state.cells.iter_mut().filter(|cell| cell.mine) {
+        for mine_cell in self.cells.iter_mut().filter(|cell| cell.mine) {
             mine_cell.revealed = true;
         }
 
-        self.game_state.outcome = Outcome::Lost;
-        self.game_state.finished_at = Some(self.game_state.clock);
+        self.outcome = Outcome::Lost;
+        self.finished_at = Some(self.clock);
         true
     }
 
     fn reveal_adjacent(&mut self, index: usize) {
-        if index >= self.game_state.cells.len() || self.game_state.outcome != Outcome::Playing {
+        if index >= self.cells.len() || self.outcome != Outcome::Playing {
             return;
         }
 
-        let cell = self.game_state.cells[index];
+        let cell = self.cells[index];
         if !cell.revealed || cell.mine || cell.adjacent == 0 {
             return;
         }
 
         let flags = neighbors(self.settings.difficulty, index)
-            .map(|neighbor| self.game_state.cells[neighbor])
+            .map(|neighbor| self.cells[neighbor])
             .filter(|it| it.flagged)
             .count() as u8;
 
@@ -244,21 +263,24 @@ impl State {
     }
 
     fn toggle_flag(&mut self, index: usize) {
-        if index < self.game_state.cells.len()
-            && self.game_state.outcome == Outcome::Playing
-            && !self.game_state.cells[index].revealed
+        if index < self.cells.len()
+            && self.outcome == Outcome::Playing
+            && !self.cells[index].revealed
         {
-            self.game_state.cells[index].switch_flag();
+            self.cells[index].switch_flag();
         }
     }
 
     fn new_game(&mut self) {
-        self.game_state.cells = vec![Cell::default(); self.settings.difficulty.width() * self.settings.difficulty.height()];
-        self.game_state.started = false;
-        self.game_state.outcome = Outcome::Playing;
+        self.cells = vec![
+            Cell::default();
+            self.settings.difficulty.width() * self.settings.difficulty.height()
+        ];
+        self.started = false;
+        self.outcome = Outcome::Playing;
         self.settings.seed = self.settings.seed.wrapping_add(1);
-        self.game_state.started_at = None;
-        self.game_state.finished_at = None;
+        self.started_at = None;
+        self.finished_at = None;
     }
 
     fn set_difficulty(&mut self, difficulty: Difficulty) {
@@ -271,8 +293,10 @@ impl State {
 
     fn place_mines(&mut self, first: usize) {
         self.tmp_buffer.clear();
-        for i in 0..self.game_state.cells.len() {
-            if i == first || neighbors(self.settings.difficulty, first).any(|neighbor| i == neighbor) {
+        for i in 0..self.cells.len() {
+            if i == first
+                || neighbors(self.settings.difficulty, first).any(|neighbor| i == neighbor)
+            {
                 continue;
             }
 
@@ -286,14 +310,15 @@ impl State {
                 .wrapping_add(1_442_695_040_888_963_407);
             let other = index + random as usize % (self.tmp_buffer.len() - index);
             self.tmp_buffer.swap(index, other);
-            self.game_state.cells[self.tmp_buffer[index]].mine = true;
+            let cell_index = self.tmp_buffer[index];
+            self.cells[cell_index].mine = true;
         }
 
-        for index in 0..self.game_state.cells.len() {
+        for index in 0..self.cells.len() {
             let adjacent = neighbors(self.settings.difficulty, index)
-                .filter(|&neighbor| self.game_state.cells[neighbor].mine)
+                .filter(|&neighbor| self.cells[neighbor].mine)
                 .count() as u8;
-            self.game_state.cells[index].adjacent = adjacent;
+            self.cells[index].adjacent = adjacent;
         }
     }
 }
@@ -327,8 +352,8 @@ fn format_time(seconds: u64) -> String {
 }
 
 fn poll(state: &mut State, now: f64, tx: &mut rune::Tx) -> bool {
-    state.game_state.clock = now;
-    if state.game_state.started && state.game_state.outcome == Outcome::Playing {
+    state.clock = now;
+    if state.started && state.outcome == Outcome::Playing {
         tx.wake_after(std::time::Duration::from_secs(1));
         true
     } else {
@@ -343,23 +368,31 @@ fn window_size(difficulty: Difficulty) -> (f32, f32) {
 }
 
 fn button_base(key: impl Into<String>) -> El {
-    el().role("button").focusable(true).center().radius(6.0).key(key)
+    el().role("button")
+        .focusable(true)
+        .center()
+        .radius(6.0)
+        .key(key)
+}
+
+fn keyed_text(key: impl Into<String>, content: impl Into<String>) -> El {
+    text(content).key(key)
 }
 
 fn cell_view(state: &State, index: usize, theme: tok::Theme) -> El {
-    let cell = state.game_state.cells[index];
+    let cell = state.cells[index];
     let row_number = index / state.settings.difficulty.width() + 1;
     let column = index % state.settings.difficulty.width() + 1;
     let (description, content, color) = match (cell.revealed, cell.mine, cell.flagged) {
-        | (true, true, _) => ("mine".to_owned(), "●".to_owned(), VIBRANT_RED),
-        | (true, _, _) if cell.adjacent == 0 => ("clear".to_owned(), "".to_owned(), theme.text),
-        | (true, _, _) => (
+        (true, true, _) => ("mine".to_owned(), "●".to_owned(), VIBRANT_RED),
+        (true, _, _) if cell.adjacent == 0 => ("clear".to_owned(), "".to_owned(), theme.text),
+        (true, _, _) => (
             format!("{} adjacent mines", cell.adjacent),
             format!("{}", cell.adjacent),
-            tok::accent((cell.adjacent as usize + 6 - 1) % 6, true)
+            tok::accent((cell.adjacent as usize + 6 - 1) % 6, true),
         ),
-        | (_, _, true) => ("flagged".to_owned(), "⚑".to_owned(), Color::WHITE),
-        | _ => ("covered".to_owned(), "".to_owned(), theme.text)
+        (_, _, true) => ("flagged".to_owned(), "⚑".to_owned(), Color::WHITE),
+        _ => ("covered".to_owned(), "".to_owned(), theme.text),
     };
     button_base(format!("cell-{index}"))
         .label(format!("Row {row_number}, column {column}, {description}"))
@@ -370,11 +403,11 @@ fn cell_view(state: &State, index: usize, theme: tok::Theme) -> El {
             theme.control_track.mix(Color::WHITE, 0.05)
         })
         .on_press_tx(move |state: &mut State, tx| {
-            state.game_state.clock = tx.clock();
+            state.clock = tx.clock();
             state.reveal(index);
         })
         .on_double_press_tx(move |state: &mut State, tx| {
-            state.game_state.clock = tx.clock();
+            state.clock = tx.clock();
             state.reveal_adjacent(index);
         })
         .on_secondary_press(move |state: &mut State, _, _| state.toggle_flag(index))
@@ -384,10 +417,10 @@ fn cell_view(state: &State, index: usize, theme: tok::Theme) -> El {
 fn view(state: &State, cx: &mut Cx<State>) -> El {
     let theme = tok::theme(true);
     let resize_window = !cfg!(target_os = "macos") || cx.titlebar_inset() > 0.0;
-    let flags = state.game_state.cells.iter().copied().filter(|it| it.flagged).count();
+    let flags = state.cells.iter().copied().filter(|it| it.flagged).count();
     let remaining = state.settings.difficulty.mines() as isize - flags as isize;
-    let status = match state.game_state.outcome {
-        Outcome::Playing if !state.game_state.started => format!("{remaining} mines · Left-click to start"),
+    let status = match state.outcome {
+        Outcome::Playing if !state.started => format!("{remaining} mines · Left-click to start"),
         Outcome::Playing => format!("{remaining} mines left"),
         Outcome::Won => "You won! · All safe cells revealed".to_owned(),
         Outcome::Lost => "Boom! · Try a new game".to_owned(),
@@ -406,7 +439,7 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
                 if resize_window {
                     tx.resize_window(window_size(difficulty));
                 } else {
-                    state.game_state.window_resize_pending = true;
+                    state.window_resize_pending = true;
                 }
             })
             .child(text(difficulty.name()).font(type_::LABEL).color(theme.text))
@@ -422,14 +455,10 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
         .key("timer")
         .font(type_::LABEL.mono())
         .color(theme.text_secondary);
-    let record = state.records[state.settings.difficulty.index()];
-    let record = text(match record {
-        Some(seconds) => format!("Best {}", format_time(seconds)),
-        None => "Best —".to_owned(),
-    })
-    .key("record")
-    .font(type_::LABEL.mono())
-    .color(theme.text_secondary);
+    let record = state.records[difficulty.index()]
+        .map(|seconds| format!("Best {}", format_time(seconds)))
+        .unwrap_or_else(|| "Best —".to_owned());
+    let record = keyed_text("record", record).font(type_::LABEL.mono()).color(theme.text_secondary);
     let new_game = button_base("new-game")
         .label("New Game")
         .size(120.0, 36.0)
@@ -445,8 +474,8 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
         .padding(16.0)
         .fill(theme.bg)
         .on_layout_tx(move |state: &mut State, _, tx| {
-            if resize_window && state.game_state.window_resize_pending {
-                state.game_state.window_resize_pending = false;
+            if resize_window && state.window_resize_pending {
+                state.window_resize_pending = false;
                 tx.resize_window(window_size(state.settings.difficulty));
             }
         })
@@ -478,7 +507,7 @@ fn main() {
             ("flagged", |state| state.toggle_flag(0)),
             ("lost", |state| {
                 state.reveal(FIRST_TO_REVEAL);
-                for (i, cell) in state.game_state.cells.iter().enumerate() {
+                for (i, cell) in state.cells.iter().enumerate() {
                     if cell.mine {
                         state.reveal(i);
                         return;
@@ -487,7 +516,7 @@ fn main() {
             }),
             ("won", |state| {
                 state.reveal(FIRST_TO_REVEAL);
-                for (i, cell) in state.game_state.cells.iter().enumerate() {
+                for (i, cell) in state.cells.iter().enumerate() {
                     if !cell.mine {
                         state.reveal(i);
                         return;
@@ -495,7 +524,12 @@ fn main() {
                 }
             }),
         ],
-        ..AppSpec::new("Minesweeper", window_size(Difficulty::Easy), State::default, view)
+        ..AppSpec::new(
+            "Minesweeper",
+            window_size(Difficulty::Easy),
+            State::default,
+            view,
+        )
     });
 }
 
@@ -545,28 +579,28 @@ mod tests {
 
     fn win_at(state: &mut State, seconds: u64) {
         let mines = state.settings.difficulty.mines();
-        for (index, cell) in state.game_state.cells.iter_mut().enumerate() {
+        for (index, cell) in state.cells.iter_mut().enumerate() {
             *cell = Cell {
                 mine: index < mines,
                 revealed: index >= mines,
                 ..Cell::default()
             };
         }
-        let target = state.game_state.cells.len() - 1;
-        state.game_state.cells[target].revealed = false;
-        state.game_state.started = true;
-        state.game_state.started_at = Some(0.0);
-        state.game_state.finished_at = None;
-        state.game_state.clock = seconds as f64;
+        let target = state.cells.len() - 1;
+        state.cells[target].revealed = false;
+        state.started = true;
+        state.started_at = Some(0.0);
+        state.finished_at = None;
+        state.clock = seconds as f64;
         state.reveal(target);
-        assert_eq!(state.game_state.outcome, Outcome::Won);
+        assert_eq!(state.outcome, Outcome::Won);
     }
 
     #[test]
     fn left_click_reveals_a_cell() {
         let mut runtime = runtime(State::new(1));
         click(&mut runtime, "cell-40");
-        assert!(runtime.state.game_state.cells[40].revealed);
+        assert!(runtime.state.cells[40].revealed);
     }
 
     #[test]
@@ -576,12 +610,12 @@ mod tests {
         runtime.secondary_down(x, y);
         runtime.secondary_up(x, y);
         runtime.frame(0.0);
-        assert!(runtime.state.game_state.cells[0].flagged);
+        assert!(runtime.state.cells[0].flagged);
         assert_eq!(label(&runtime, "cell-0"), "Row 1, column 1, flagged");
         runtime.secondary_down(x, y);
         runtime.secondary_up(x, y);
         runtime.frame(0.0);
-        assert!(!runtime.state.game_state.cells[0].flagged);
+        assert!(!runtime.state.cells[0].flagged);
     }
 
     #[test]
@@ -590,11 +624,10 @@ mod tests {
         click(&mut runtime, "cell-40");
         click(&mut runtime, "new-game");
         assert_eq!(runtime.state.settings.seed, 2);
-        assert!(!runtime.state.game_state.started);
+        assert!(!runtime.state.started);
         assert!(
             runtime
                 .state
-                .game_state
                 .cells
                 .iter()
                 .all(|cell| *cell == Cell::default())
@@ -604,12 +637,12 @@ mod tests {
     #[test]
     fn cell_labels_describe_state() {
         let mut state = State::new(1);
-        state.game_state.cells[0].mine = true;
-        state.game_state.cells[0].revealed = true;
-        state.game_state.cells[1].revealed = true;
-        state.game_state.cells[1].adjacent = 3;
-        state.game_state.cells[2].flagged = true;
-        state.game_state.cells[4].revealed = true;
+        state.cells[0].mine = true;
+        state.cells[0].revealed = true;
+        state.cells[1].revealed = true;
+        state.cells[1].adjacent = 3;
+        state.cells[2].flagged = true;
+        state.cells[4].revealed = true;
         let runtime = runtime(state);
         assert_eq!("Row 1, column 1, mine", label(&runtime, "cell-0"));
         assert_eq!(
@@ -624,91 +657,91 @@ mod tests {
     #[test]
     fn reveal_adjacent_requires_a_matching_flag_count() {
         let mut state = State::new(1);
-        state.game_state.started = true;
-        state.game_state.cells[30].mine = true;
-        state.game_state.cells[40].revealed = true;
-        state.game_state.cells[40].adjacent = 1;
-        let before = state.game_state.cells.clone();
+        state.started = true;
+        state.cells[30].mine = true;
+        state.cells[40].revealed = true;
+        state.cells[40].adjacent = 1;
+        let before = state.cells.clone();
         state.reveal_adjacent(40);
-        assert_eq!(state.game_state.cells, before);
-        state.game_state.cells[30].flagged = true;
+        assert_eq!(state.cells, before);
+        state.cells[30].flagged = true;
         state.reveal_adjacent(40);
-        assert!(state.game_state.cells[31].revealed);
-        assert!(state.game_state.cells[30].flagged);
-        assert!(!state.game_state.cells[30].revealed);
+        assert!(state.cells[31].revealed);
+        assert!(state.cells[30].flagged);
+        assert!(!state.cells[30].revealed);
     }
 
     #[test]
     fn reveal_adjacent_validates_the_target() {
         let mut state = State::new(1);
-        state.game_state.started = true;
-        state.game_state.cells[30].flagged = true;
-        state.game_state.cells[40].adjacent = 1;
-        let before = state.game_state.cells.clone();
+        state.started = true;
+        state.cells[30].flagged = true;
+        state.cells[40].adjacent = 1;
+        let before = state.cells.clone();
         state.reveal_adjacent(40);
-        assert_eq!(state.game_state.cells, before);
+        assert_eq!(state.cells, before);
 
-        state.game_state.cells[40].revealed = true;
-        state.game_state.cells[40].mine = true;
-        let before = state.game_state.cells.clone();
+        state.cells[40].revealed = true;
+        state.cells[40].mine = true;
+        let before = state.cells.clone();
         state.reveal_adjacent(40);
-        assert_eq!(state.game_state.cells, before);
+        assert_eq!(state.cells, before);
 
-        state.game_state.cells[40] = Cell {
+        state.cells[40] = Cell {
             revealed: true,
             ..Cell::default()
         };
-        state.game_state.cells[30].flagged = false;
-        let before = state.game_state.cells.clone();
+        state.cells[30].flagged = false;
+        let before = state.cells.clone();
         state.reveal_adjacent(40);
-        assert_eq!(state.game_state.cells, before);
+        assert_eq!(state.cells, before);
 
-        state.game_state.cells[40].adjacent = 1;
-        state.game_state.cells[30].flagged = true;
-        state.game_state.outcome = Outcome::Won;
-        let before = state.game_state.cells.clone();
+        state.cells[40].adjacent = 1;
+        state.cells[30].flagged = true;
+        state.outcome = Outcome::Won;
+        let before = state.cells.clone();
         state.reveal_adjacent(40);
-        assert_eq!(state.game_state.cells, before);
-        state.reveal_adjacent(state.game_state.cells.len());
-        assert_eq!(state.game_state.cells, before);
+        assert_eq!(state.cells, before);
+        state.reveal_adjacent(state.cells.len());
+        assert_eq!(state.cells, before);
     }
 
     #[test]
     fn reveal_adjacent_trusts_flag_count_not_flag_correctness() {
         let mut state = State::new(1);
-        state.game_state.started = true;
-        state.game_state.cells[30].mine = true;
-        state.game_state.cells[31].flagged = true;
-        state.game_state.cells[40].revealed = true;
-        state.game_state.cells[40].adjacent = 1;
+        state.started = true;
+        state.cells[30].mine = true;
+        state.cells[31].flagged = true;
+        state.cells[40].revealed = true;
+        state.cells[40].adjacent = 1;
         state.reveal_adjacent(40);
-        assert!(state.game_state.cells[30].revealed);
-        assert_eq!(state.game_state.outcome, Outcome::Lost);
+        assert!(state.cells[30].revealed);
+        assert_eq!(state.outcome, Outcome::Lost);
     }
 
     #[test]
     fn double_click_reveals_adjacent_cells() {
         let mut state = State::new(1);
-        state.game_state.started = true;
-        state.game_state.cells[30].mine = true;
-        state.game_state.cells[30].flagged = true;
-        state.game_state.cells[40].revealed = true;
-        state.game_state.cells[40].adjacent = 1;
+        state.started = true;
+        state.cells[30].mine = true;
+        state.cells[30].flagged = true;
+        state.cells[40].revealed = true;
+        state.cells[40].adjacent = 1;
         let mut runtime = runtime(state);
         click(&mut runtime, "cell-40");
         click(&mut runtime, "cell-40");
-        assert!(runtime.state.game_state.cells[31].revealed);
+        assert!(runtime.state.cells[31].revealed);
     }
 
     #[test]
     fn cell_colors_distinguish_covered_and_revealed_states() {
         let mut state = State::new(1);
-        state.game_state.cells[0].revealed = true;
-        state.game_state.cells[1].revealed = true;
-        state.game_state.cells[1].adjacent = 1;
-        state.game_state.cells[3].flagged = true;
-        state.game_state.cells[4].mine = true;
-        state.game_state.cells[4].revealed = true;
+        state.cells[0].revealed = true;
+        state.cells[1].revealed = true;
+        state.cells[1].adjacent = 1;
+        state.cells[3].flagged = true;
+        state.cells[4].mine = true;
+        state.cells[4].revealed = true;
         let runtime = runtime(state);
         let elements = runtime.elements();
         let cell = |key: &str| {
@@ -725,18 +758,13 @@ mod tests {
                 .unwrap()
                 .text_color
         };
-        let covered = tok::theme(true)
-            .control_track
-            .mix(Color::WHITE, 0.05);
+        let covered = tok::theme(true).control_track.mix(Color::WHITE, 0.05);
         assert_eq!(fill("cell-2"), covered);
         assert_eq!(fill("cell-3"), covered);
         for key in ["cell-0", "cell-1", "cell-4"] {
             assert_eq!(fill(key), tok::theme(true).control_track);
         }
-        assert_eq!(
-            text_color("cell-4"),
-            Some(VIBRANT_RED)
-        );
+        assert_eq!(text_color("cell-4"), Some(VIBRANT_RED));
         assert_eq!(text_color("cell-3"), Some(Color::WHITE));
     }
 
@@ -756,12 +784,12 @@ mod tests {
         assert_eq!(state.records[Difficulty::Easy.index()], Some(12));
 
         state.new_game();
-        state.game_state.started = true;
-        state.game_state.started_at = Some(0.0);
-        state.game_state.clock = 40.0;
-        state.game_state.cells[0].mine = true;
+        state.started = true;
+        state.started_at = Some(0.0);
+        state.clock = 40.0;
+        state.cells[0].mine = true;
         state.reveal(0);
-        assert_eq!(state.game_state.outcome, Outcome::Lost);
+        assert_eq!(state.outcome, Outcome::Lost);
         assert_eq!(state.records[Difficulty::Moderate.index()], Some(30));
     }
 
@@ -800,8 +828,8 @@ mod tests {
         click(&mut runtime, "cell-40");
         runtime.frame(65.0);
         assert_eq!(text_value(&runtime, "timer"), "Time 1:05");
-        let mine = (0..runtime.state.game_state.cells.len())
-            .find(|&index| runtime.state.game_state.cells[index].mine)
+        let mine = (0..runtime.state.cells.len())
+            .find(|&index| runtime.state.cells[index].mine)
             .unwrap();
         runtime.state.reveal(mine);
         runtime.frame(0.0);
@@ -839,13 +867,13 @@ mod tests {
         runtime.set_viewport((1440.0, 900.0), 2.0);
         runtime.frame(0.0);
         click(&mut runtime, "difficulty-hard");
-        assert!(runtime.state.game_state.window_resize_pending);
+        assert!(runtime.state.window_resize_pending);
 
         runtime.set_titlebar_inset(30.0);
         runtime.set_viewport(window_size(Difficulty::Easy), 2.0);
         runtime.frame(0.0);
         runtime.frame(0.0);
-        assert!(!runtime.state.game_state.window_resize_pending);
+        assert!(!runtime.state.window_resize_pending);
     }
 
     #[test]
@@ -859,17 +887,16 @@ mod tests {
             assert_eq!(label(&runtime, key), name);
         }
         click(&mut runtime, "cell-40");
-        runtime.state.game_state.cells[0].flagged = true;
+        runtime.state.cells[0].flagged = true;
         click(&mut runtime, "difficulty-moderate");
         assert_eq!(runtime.state.settings.difficulty, Difficulty::Moderate);
-        assert_eq!(runtime.state.game_state.cells.len(), 256);
+        assert_eq!(runtime.state.cells.len(), 256);
         assert_eq!(runtime.state.settings.seed, 2);
-        assert!(!runtime.state.game_state.started);
-        assert_eq!(runtime.state.game_state.outcome, Outcome::Playing);
+        assert!(!runtime.state.started);
+        assert_eq!(runtime.state.outcome, Outcome::Playing);
         assert!(
             runtime
                 .state
-                .game_state
                 .cells
                 .iter()
                 .all(|cell| *cell == Cell::default())
@@ -879,7 +906,7 @@ mod tests {
         assert_eq!(runtime.state.settings.seed, 2);
         click(&mut runtime, "difficulty-hard");
         assert_eq!(runtime.state.settings.difficulty, Difficulty::Hard);
-        assert_eq!(runtime.state.game_state.cells.len(), 480);
+        assert_eq!(runtime.state.cells.len(), 480);
         assert_eq!(runtime.state.settings.seed, 3);
     }
 
@@ -895,19 +922,19 @@ mod tests {
             assert_eq!(difficulty.mines(), mines);
             let mut state = State::new(7);
             state.settings.difficulty = difficulty;
-            state.game_state.cells = vec![Cell::default(); width * height];
+            state.cells = vec![Cell::default(); width * height];
             let first = (height / 2) * width + width / 2;
             state.reveal(first);
-            assert!(state.game_state.cells[first].revealed);
-            assert!(!state.game_state.cells[first].mine);
-            assert_eq!(state.game_state.cells[first].adjacent, 0);
-            assert!(neighbors(difficulty, first).all(|index| !state.game_state.cells[index].mine));
-            assert_eq!(state.game_state.cells.iter().filter(|cell| cell.mine).count(), mines);
-            for index in 0..state.game_state.cells.len() {
+            assert!(state.cells[first].revealed);
+            assert!(!state.cells[first].mine);
+            assert_eq!(state.cells[first].adjacent, 0);
+            assert!(neighbors(difficulty, first).all(|index| !state.cells[index].mine));
+            assert_eq!(state.cells.iter().filter(|cell| cell.mine).count(), mines);
+            for index in 0..state.cells.len() {
                 let expected = neighbors(difficulty, index)
-                    .filter(|&neighbor| state.game_state.cells[neighbor].mine)
+                    .filter(|&neighbor| state.cells[neighbor].mine)
                     .count() as u8;
-                assert_eq!(state.game_state.cells[index].adjacent, expected);
+                assert_eq!(state.cells[index].adjacent, expected);
             }
         }
         assert_eq!(
@@ -929,10 +956,12 @@ mod tests {
         for first in [0, 4, 40, 80] {
             let mut state = State::new(7);
             state.reveal(first);
-            assert!(state.game_state.cells[first].revealed);
-            assert!(!state.game_state.cells[first].mine);
-            assert_eq!(state.game_state.cells[first].adjacent, 0);
-            assert!(neighbors(state.settings.difficulty, first).all(|index| !state.game_state.cells[index].mine));
+            assert!(state.cells[first].revealed);
+            assert!(!state.cells[first].mine);
+            assert_eq!(state.cells[first].adjacent, 0);
+            assert!(
+                neighbors(state.settings.difficulty, first).all(|index| !state.cells[index].mine)
+            );
         }
     }
 
@@ -941,14 +970,14 @@ mod tests {
         let mut state = State::new(11);
         state.reveal(40);
         assert_eq!(
-            state.game_state.cells.iter().filter(|cell| cell.mine).count(),
+            state.cells.iter().filter(|cell| cell.mine).count(),
             state.settings.difficulty.mines()
         );
-        for index in 0..state.game_state.cells.len() {
+        for index in 0..state.cells.len() {
             let expected = neighbors(state.settings.difficulty, index)
-                .filter(|&neighbor| state.game_state.cells[neighbor].mine)
+                .filter(|&neighbor| state.cells[neighbor].mine)
                 .count() as u8;
-            assert_eq!(state.game_state.cells[index].adjacent, expected);
+            assert_eq!(state.cells[index].adjacent, expected);
         }
     }
 
@@ -956,35 +985,35 @@ mod tests {
     fn flagging_guards_reveal() {
         let mut state = State::new(1);
         state.reveal(40);
-        let index = (0..state.game_state.cells.len())
-            .find(|&index| !state.game_state.cells[index].mine && !state.game_state.cells[index].revealed)
+        let index = (0..state.cells.len())
+            .find(|&index| !state.cells[index].mine && !state.cells[index].revealed)
             .unwrap();
         state.toggle_flag(index);
-        assert!(state.game_state.cells[index].flagged);
+        assert!(state.cells[index].flagged);
         state.reveal(index);
-        assert!(!state.game_state.cells[index].revealed);
+        assert!(!state.cells[index].revealed);
         state.toggle_flag(index);
-        assert!(!state.game_state.cells[index].flagged);
+        assert!(!state.cells[index].flagged);
     }
 
     #[test]
     fn empty_reveal_floods_and_respects_flags() {
         let mut state = State::new(1);
-        state.game_state.started = true;
-        state.game_state.cells[8].mine = true;
-        for index in 0..state.game_state.cells.len() {
-            state.game_state.cells[index].adjacent = neighbors(state.settings.difficulty, index)
-                .filter(|&neighbor| state.game_state.cells[neighbor].mine)
+        state.started = true;
+        state.cells[8].mine = true;
+        for index in 0..state.cells.len() {
+            state.cells[index].adjacent = neighbors(state.settings.difficulty, index)
+                .filter(|&neighbor| state.cells[neighbor].mine)
                 .count() as u8;
         }
         state.toggle_flag(40);
         state.reveal(0);
-        assert!(state.game_state.cells[7].revealed);
-        assert_eq!(state.game_state.cells[7].adjacent, 1);
-        assert!(!state.game_state.cells[8].revealed);
-        assert!(state.game_state.cells[40].flagged);
-        assert!(!state.game_state.cells[40].revealed);
-        assert_eq!(state.game_state.cells.iter().filter(|cell| cell.revealed).count(), 79);
+        assert!(state.cells[7].revealed);
+        assert_eq!(state.cells[7].adjacent, 1);
+        assert!(!state.cells[8].revealed);
+        assert!(state.cells[40].flagged);
+        assert!(!state.cells[40].revealed);
+        assert_eq!(state.cells.iter().filter(|cell| cell.revealed).count(), 79);
     }
 
     #[test]
@@ -992,18 +1021,18 @@ mod tests {
         for difficulty in Difficulty::ALL {
             let mut state = State::new(3);
             state.settings.difficulty = difficulty;
-            state.game_state.cells = vec![Cell::default(); difficulty.width() * difficulty.height()];
+            state.cells = vec![Cell::default(); difficulty.width() * difficulty.height()];
             let first = (difficulty.height() / 2) * difficulty.width() + difficulty.width() / 2;
             state.reveal(first);
-            for index in 0..state.game_state.cells.len() {
-                if !state.game_state.cells[index].mine {
+            for index in 0..state.cells.len() {
+                if !state.cells[index].mine {
                     state.reveal(index);
                 }
             }
-            assert_eq!(state.game_state.outcome, Outcome::Won);
+            assert_eq!(state.outcome, Outcome::Won);
             assert_eq!(
-                state.game_state.cells.iter().filter(|cell| cell.revealed).count(),
-                state.game_state.cells.len() - difficulty.mines()
+                state.cells.iter().filter(|cell| cell.revealed).count(),
+                state.cells.len() - difficulty.mines()
             );
         }
     }
@@ -1012,11 +1041,11 @@ mod tests {
     fn finished_game_ignores_cell_input() {
         for outcome in [Outcome::Won, Outcome::Lost] {
             let mut state = State::new(5);
-            state.game_state.outcome = outcome;
-            let before = state.game_state.cells.clone();
+            state.outcome = outcome;
+            let before = state.cells.clone();
             state.reveal(40);
             state.toggle_flag(40);
-            assert_eq!(state.game_state.cells, before);
+            assert_eq!(state.cells, before);
         }
     }
 
@@ -1024,15 +1053,15 @@ mod tests {
     fn new_game_resets_the_board() {
         let mut state = State::new(9);
         state.reveal(40);
-        let mine = (0..state.game_state.cells.len())
-            .find(|&index| state.game_state.cells[index].mine)
+        let mine = (0..state.cells.len())
+            .find(|&index| state.cells[index].mine)
             .unwrap();
         state.reveal(mine);
         state.toggle_flag(0);
         state.new_game();
         assert_eq!(state.settings.seed, 10);
-        assert!(!state.game_state.started);
-        assert!(matches!(state.game_state.outcome, Outcome::Playing));
-        assert!(state.game_state.cells.iter().all(|cell| *cell == Cell::default()));
+        assert!(!state.started);
+        assert!(matches!(state.outcome, Outcome::Playing));
+        assert!(state.cells.iter().all(|cell| *cell == Cell::default()));
     }
 }
