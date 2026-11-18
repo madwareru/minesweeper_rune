@@ -7,12 +7,17 @@ const CELL_GAP: f32 = 4.0;
 const CONTROL_HEIGHT: f32 = 36.0;
 const DIFFICULTY_BUTTON_WIDTH: f32 = 100.0;
 const NEW_GAME_BUTTON_WIDTH: f32 = 120.0;
+const REPLAY_BUTTON_WIDTH: f32 = 80.0;
+const REPLAY_SPEED_BUTTON_WIDTH: f32 = 60.0;
+const REPLAY_PROGRESS_WIDTH: f32 =
+    REPLAY_BUTTON_WIDTH + REPLAY_SPEED_BUTTON_WIDTH * 2.0 + SECTION_GAP * 2.0;
+const REPLAY_PROGRESS_HEIGHT: f32 = 6.0;
 const CORNER_RADIUS: f32 = 6.0;
 const CONTROL_GAP: f32 = 8.0;
 const SECTION_GAP: f32 = 16.0;
 const ROOT_PADDING: f32 = 16.0;
 const MIN_WINDOW_WIDTH: f32 = 420.0;
-const NON_BOARD_HEIGHT: f32 = 248.0;
+const NON_BOARD_HEIGHT: f32 = 262.0;
 const NUMBER_ACCENT_COUNT: usize = 6;
 const COVERED_CELL_ALPHA: f32 = 0.2;
 const SELECTED_DIFFICULTY_ALPHA: f32 = 0.2;
@@ -74,6 +79,8 @@ fn text_button(
 }
 
 fn cell_view(state: &State, index: usize, theme: tok::Theme) -> El {
+    let is_replay = state.replay.is_some();
+    let state = state.displayed();
     let cell = state.cells[index];
     let difficulty = state.settings.difficulty;
     let row_number = index / difficulty.width() + 1;
@@ -90,7 +97,11 @@ fn cell_view(state: &State, index: usize, theme: tok::Theme) -> El {
         _ => ("covered".to_owned(), "".to_owned(), theme.text),
     };
 
-    let hint = state.hint.as_ref().filter(|hint| hint.cell == index);
+    let hint = if is_replay {
+        None
+    } else {
+        state.hint.as_ref().filter(|hint| hint.cell == index)
+    };
     let mut alpha = COVERED_CELL_ALPHA;
     if cell.revealed {
         alpha /= 2.0;
@@ -130,17 +141,25 @@ fn cell_view(state: &State, index: usize, theme: tok::Theme) -> El {
 
 pub(crate) fn view(state: &State, cx: &mut Cx<State>) -> El {
     let theme = tok::theme(true);
-    let difficulty = state.settings.difficulty;
+    let displayed = state.displayed();
+    let difficulty = displayed.settings.difficulty;
     let current_size = cx
         .layout_size("root")
         .map(|[width, height]| (width, height));
-    let flags = state.cells.iter().copied().filter(|it| it.flagged).count();
+    let flags = displayed
+        .cells
+        .iter()
+        .copied()
+        .filter(|it| it.flagged)
+        .count();
     let remaining = difficulty.mines() as isize - flags as isize;
-    let status = match state.outcome {
-        Outcome::Playing if !state.started => format!("{remaining} mines · Left-click to start"),
-        Outcome::Playing => format!("{remaining} mines left"),
-        Outcome::Won => "You won! · All safe cells revealed".to_owned(),
-        Outcome::Lost => "Boom! · Try a new game".to_owned(),
+    let status = match (&state.replay, displayed.outcome, displayed.started) {
+        (Some(replay), _, _) if replay.playing => "Replay · Playing".to_owned(),
+        (Some(_), _, _) => "Replay · Paused".to_owned(),
+        (None, Outcome::Playing, false) => format!("{remaining} mines · Left-click to start"),
+        (None, Outcome::Playing, true) => format!("{remaining} mines left"),
+        (None, Outcome::Won, _) => "You won! · All safe cells revealed".to_owned(),
+        (None, Outcome::Lost, _) => "Boom! · Try a new game".to_owned(),
     };
     let difficulties = row()
         .gap(CONTROL_GAP)
@@ -191,6 +210,96 @@ pub(crate) fn view(state: &State, cx: &mut Cx<State>) -> El {
         theme.text,
     )
     .on_press(|state: &mut State| state.new_game());
+    let controls = if let Some(replay) = state.replay.as_ref() {
+        let progress = replay.next_event as f32 / state.events.len() as f32;
+        let play_label = if replay.playing { "❙❙" } else { "⏵" };
+        let speed_label = match replay.speed {
+            2.0 => "x2",
+            4.0 => "x4",
+            8.0 => "x8",
+            _ => "x1",
+        };
+        col()
+            .gap(CONTROL_GAP)
+            .center()
+            .child(
+                row()
+                    .gap(SECTION_GAP)
+                    .center()
+                    .child(
+                        text_button(
+                            "replay-play",
+                            play_label,
+                            REPLAY_BUTTON_WIDTH,
+                            theme.card,
+                            theme.text,
+                        )
+                        .on_press_tx(|state: &mut State, tx| {
+                            state.toggle_replay_playback();
+                            tx.wake_after(std::time::Duration::ZERO);
+                        }),
+                    )
+                    .child(
+                        text_button(
+                            "replay-speed",
+                            speed_label,
+                            REPLAY_SPEED_BUTTON_WIDTH,
+                            theme.card,
+                            theme.text,
+                        )
+                        .on_press_tx(|state: &mut State, tx| {
+                            state.cycle_replay_speed();
+                            tx.wake_after(std::time::Duration::ZERO);
+                        }),
+                    )
+                    .child(
+                        text_button(
+                            "replay-skip",
+                            "⏵⏵❙",
+                            REPLAY_SPEED_BUTTON_WIDTH,
+                            theme.card,
+                            theme.text,
+                        )
+                        .on_press(|state: &mut State| state.skip_replay()),
+                    ),
+            )
+            .child(
+                el().key("replay-progress-track")
+                    .size(REPLAY_PROGRESS_WIDTH, REPLAY_PROGRESS_HEIGHT)
+                    .radius(REPLAY_PROGRESS_HEIGHT / 2.0)
+                    .fill(theme.control_track)
+                    .child(
+                        el().key("replay-progress-fill")
+                            .size(REPLAY_PROGRESS_WIDTH * progress, REPLAY_PROGRESS_HEIGHT)
+                            .radius(REPLAY_PROGRESS_HEIGHT / 2.0)
+                            .fill(tok::accent(0, true)),
+                    ),
+            )
+    } else {
+        let controls = row()
+            .gap(SECTION_GAP)
+            .center()
+            .child(timer)
+            .child(new_game)
+            .child(record);
+        if state.outcome == Outcome::Playing {
+            controls
+        } else {
+            controls.child(
+                text_button(
+                    "replay",
+                    "Replay",
+                    REPLAY_BUTTON_WIDTH,
+                    theme.card,
+                    theme.text,
+                )
+                .on_press_tx(|state: &mut State, tx| {
+                    state.start_replay();
+                    tx.wake_after(std::time::Duration::ZERO);
+                }),
+            )
+        }
+    };
 
     col()
         .key("root")
@@ -210,16 +319,9 @@ pub(crate) fn view(state: &State, cx: &mut Cx<State>) -> El {
                 .font(type_::BODY)
                 .color(theme.text_secondary),
         )
-        .child(difficulties)
+        .children((state.replay.is_none()).then_some(difficulties))
         .child(board)
-        .child(
-            row()
-                .gap(SECTION_GAP)
-                .center()
-                .child(timer)
-                .child(new_game)
-                .child(record),
-        )
+        .child(controls)
 }
 
 #[cfg(test)]
@@ -288,6 +390,70 @@ mod tests {
             kind: HintKind::MineCount,
         });
         state
+    }
+
+    fn lost_state() -> State {
+        let mut state = State::new(1);
+        state.clock = 10.0;
+        state.reveal(40);
+        let mine = (0..state.cells.len())
+            .find(|&index| state.cells[index].mine)
+            .unwrap();
+        state.clock = 30.0;
+        state.reveal(mine);
+        state
+    }
+
+    #[test]
+    fn replay_controls_lock_input_show_progress_and_restore_the_final_board() {
+        let final_cells = lost_state().cells.clone();
+        let mut runtime = runtime(lost_state());
+        assert_eq!(label(&runtime, "replay"), "Replay");
+        click(&mut runtime, "replay");
+        runtime.frame(0.0);
+        assert!(runtime.state.replay.is_some());
+        assert_eq!(runtime.state.replay.as_ref().unwrap().next_event, 1);
+        runtime.frame(1.0);
+        assert_eq!(label(&runtime, "replay-play"), "❙❙");
+        let track = element(&runtime, "replay-progress-track").unwrap();
+        let fill = element(&runtime, "replay-progress-fill").unwrap();
+        let play = element(&runtime, "replay-play").unwrap();
+        assert_eq!(track.rect[2], 232.0);
+        assert_eq!(fill.rect[0], track.rect[0]);
+        assert_eq!(fill.rect[2], 116.0);
+        assert_eq!(track.rect[1], play.rect[1] + play.rect[3] + CONTROL_GAP);
+        assert_eq!(track.fill, tok::theme(true).control_track);
+        assert!(element(&runtime, "new-game").is_none());
+
+        let covered = (0..runtime.state.replay.as_ref().unwrap().game.cells.len())
+            .find(|&index| !runtime.state.replay.as_ref().unwrap().game.cells[index].revealed)
+            .unwrap();
+        let replay_cells = runtime.state.replay.as_ref().unwrap().game.cells.clone();
+        click(&mut runtime, &format!("cell-{covered}"));
+        for key in ["difficulty-easy", "difficulty-moderate", "difficulty-hard"] {
+            assert!(element(&runtime, key).is_none());
+        }
+        assert_eq!(
+            runtime.state.replay.as_ref().unwrap().game.cells,
+            replay_cells
+        );
+
+        click(&mut runtime, "replay-play");
+        assert_eq!(label(&runtime, "replay-play"), "⏵");
+        let next_event = runtime.state.replay.as_ref().unwrap().next_event;
+        runtime.frame(5.0);
+        assert_eq!(
+            runtime.state.replay.as_ref().unwrap().next_event,
+            next_event
+        );
+        for expected in ["x2", "x4", "x8", "x1"] {
+            click(&mut runtime, "replay-speed");
+            assert_eq!(label(&runtime, "replay-speed"), expected);
+        }
+
+        click(&mut runtime, "replay-skip");
+        assert!(runtime.state.replay.is_none());
+        assert_eq!(runtime.state.cells, final_cells);
     }
 
     #[test]
@@ -439,7 +605,10 @@ mod tests {
         assert_eq!(fill("cell-2"), covered);
         assert_eq!(fill("cell-3"), covered);
         for key in ["cell-0", "cell-1", "cell-4"] {
-            assert_eq!(fill(key), tok::accent(0, true).alpha(COVERED_CELL_ALPHA / 2.0));
+            assert_eq!(
+                fill(key),
+                tok::accent(0, true).alpha(COVERED_CELL_ALPHA / 2.0)
+            );
         }
         assert_eq!(text_color("cell-4"), Some(VIBRANT_RED));
         assert_eq!(text_color("cell-3"), Some(Color::WHITE));

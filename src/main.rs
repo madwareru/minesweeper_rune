@@ -7,7 +7,19 @@ use rune::AppSpec;
 use view::{view, window_size};
 
 fn poll(state: &mut State, now: f64, tx: &mut rune::Tx) -> bool {
+    let elapsed = (now - state.clock).max(0.0);
     state.clock = now;
+    if state.replay.is_some() {
+        state.advance_replay(elapsed);
+        if let Some(replay) = state.replay.as_ref()
+            && replay.playing
+        {
+            let next_at = state.events[replay.next_event].at;
+            let delay = ((next_at - replay.game.clock) / replay.speed).max(0.0);
+            tx.wake_after(std::time::Duration::from_secs_f64(delay));
+        }
+        return true;
+    }
     if state.started && state.outcome == model::Outcome::Playing {
         state.update_hint();
         tx.wake_after(std::time::Duration::from_secs(1));

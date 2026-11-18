@@ -1,18 +1,105 @@
-use crate::model::{Cell, Difficulty, Hint, HintKind, Outcome, State};
+use crate::model::{
+    Cell, Difficulty, EventKind, GameEvent, Hint, HintKind, Outcome, Replay, State,
+};
 
 const HINT_DELAY: f64 = 15.0;
 
 impl State {
     pub(crate) fn reveal(&mut self, index: usize) {
-        if self.outcome != Outcome::Playing {
+        self.record_event(EventKind::RevealCell(index));
+    }
+
+    fn record_event(&mut self, kind: EventKind) {
+        if self.replay.is_some() {
             return;
         }
-        if index >= self.cells.len() {
+        let event = GameEvent {
+            at: self.clock,
+            kind,
+        };
+        if self.apply_event(kind) {
+            self.events.push(event);
+        }
+    }
+
+    fn apply_event(&mut self, kind: EventKind) -> bool {
+        match kind {
+            EventKind::RevealCell(index) => self.apply_reveal(index),
+            EventKind::ToggleFlag(index) => self.apply_toggle_flag(index),
+            EventKind::RevealNeighbours(index) => self.apply_reveal_adjacent(index),
+        }
+    }
+
+    pub(crate) fn start_replay(&mut self) {
+        if self.outcome == Outcome::Playing || self.events.is_empty() || self.replay.is_some() {
             return;
+        }
+        let difficulty = self.settings.difficulty;
+        let mut game = State::with_prefs(self.settings.seed, rune::prefs::Prefs::memory());
+        game.settings.difficulty = difficulty;
+        game.cells = vec![Cell::default(); difficulty.width() * difficulty.height()];
+        game.clock = self.events[0].at;
+        self.replay = Some(Replay {
+            game: Box::new(game),
+            next_event: 0,
+            playing: true,
+            speed: 1.0,
+        });
+    }
+
+    pub(crate) fn advance_replay(&mut self, elapsed: f64) {
+        let Some(replay) = self.replay.as_mut() else {
+            return;
+        };
+        if !replay.playing {
+            return;
+        }
+        let playback_clock = replay.game.clock + elapsed * replay.speed;
+        while replay.next_event < self.events.len()
+            && self.events[replay.next_event].at <= playback_clock
+        {
+            let event = self.events[replay.next_event];
+            replay.game.clock = event.at;
+            replay.game.apply_event(event.kind);
+            replay.next_event += 1;
+        }
+        if replay.next_event == self.events.len() {
+            self.replay = None;
+        } else {
+            replay.game.clock = playback_clock;
+        }
+    }
+
+    pub(crate) fn toggle_replay_playback(&mut self) {
+        if let Some(replay) = self.replay.as_mut() {
+            replay.playing = !replay.playing;
+        }
+    }
+
+    pub(crate) fn cycle_replay_speed(&mut self) {
+        if let Some(replay) = self.replay.as_mut() {
+            replay.speed = if replay.speed == 8.0 {
+                1.0
+            } else {
+                replay.speed * 2.0
+            };
+        }
+    }
+
+    pub(crate) fn skip_replay(&mut self) {
+        self.replay = None;
+    }
+
+    fn apply_reveal(&mut self, index: usize) -> bool {
+        if self.outcome != Outcome::Playing {
+            return false;
+        }
+        if index >= self.cells.len() {
+            return false;
         }
         let cell = &self.cells[index];
         if cell.revealed || cell.flagged {
-            return;
+            return false;
         }
 
         if !self.started {
@@ -24,12 +111,13 @@ impl State {
         self.note_progress();
 
         if self.check_loss(index) {
-            return;
+            return true;
         }
 
         self.reveal_area_at(index);
 
         self.check_for_win();
+        true
     }
 
     fn note_progress(&mut self) {
@@ -191,13 +279,17 @@ impl State {
     }
 
     pub(crate) fn reveal_adjacent(&mut self, index: usize) {
+        self.record_event(EventKind::RevealNeighbours(index));
+    }
+
+    fn apply_reveal_adjacent(&mut self, index: usize) -> bool {
         if index >= self.cells.len() || self.outcome != Outcome::Playing {
-            return;
+            return false;
         }
 
         let cell = self.cells[index];
         if !cell.revealed || cell.mine || cell.adjacent == 0 {
-            return;
+            return false;
         }
 
         let flags = neighbors(self.settings.difficulty, index)
@@ -206,25 +298,34 @@ impl State {
             .count() as u8;
 
         if flags != cell.adjacent {
-            return;
+            return false;
         }
 
+        let mut revealed = false;
         for neighbor in neighbors(self.settings.difficulty, index) {
-            self.reveal(neighbor);
+            revealed |= self.apply_reveal(neighbor);
         }
+        revealed
     }
 
     pub(crate) fn toggle_flag(&mut self, index: usize) {
-        if index < self.cells.len()
-            && self.outcome == Outcome::Playing
-            && !self.cells[index].revealed
+        self.record_event(EventKind::ToggleFlag(index));
+    }
+
+    fn apply_toggle_flag(&mut self, index: usize) -> bool {
+        if index >= self.cells.len()
+            || self.outcome != Outcome::Playing
+            || self.cells[index].revealed
         {
-            self.cells[index].switch_flag();
-            self.note_progress();
+            return false;
         }
+        self.cells[index].switch_flag();
+        self.note_progress();
+        true
     }
 
     pub(crate) fn new_game(&mut self) {
+        self.replay = None;
         self.cells = vec![
             Cell::default();
             self.settings.difficulty.width() * self.settings.difficulty.height()
@@ -236,10 +337,11 @@ impl State {
         self.finished_at = None;
         self.last_progress_at = None;
         self.hint = None;
+        self.events.clear();
     }
 
     pub(crate) fn set_difficulty(&mut self, difficulty: Difficulty) {
-        if self.settings.difficulty == difficulty {
+        if self.settings.difficulty == difficulty || self.replay.is_some() {
             return;
         }
         self.settings.difficulty = difficulty;
@@ -319,7 +421,7 @@ pub(crate) fn win_at(state: &mut State, seconds: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::HintKind;
+    use crate::model::{EventKind, HintKind};
     use rune::prefs::Prefs;
 
     fn inactive_state() -> State {
@@ -339,6 +441,125 @@ mod tests {
         state.cells[40].adjacent = 1;
         state.cells[30].revealed = false;
         state
+    }
+
+    #[test]
+    fn events_record_only_accepted_actions_with_timestamps() {
+        let mut state = State::new(1);
+        state.clock = 2.0;
+        state.toggle_flag(0);
+        state.clock = 3.0;
+        state.toggle_flag(0);
+        state.clock = 4.0;
+        state.reveal(40);
+        state.clock = 5.0;
+        state.reveal(40);
+        state.toggle_flag(40);
+        state.reveal_adjacent(40);
+
+        let events: Vec<_> = state
+            .events
+            .iter()
+            .map(|event| (event.at, event.kind))
+            .collect();
+        assert_eq!(
+            events,
+            vec![
+                (2.0, EventKind::ToggleFlag(0)),
+                (3.0, EventKind::ToggleFlag(0)),
+                (4.0, EventKind::RevealCell(40)),
+            ]
+        );
+
+        state.new_game();
+        assert!(state.events.is_empty());
+    }
+
+    #[test]
+    fn reveal_neighbours_is_logged_as_one_event() {
+        let mut state = State::new(1);
+        state.reveal(40);
+        let index = (0..state.cells.len())
+            .find(|&index| state.cells[index].revealed && state.cells[index].adjacent > 0)
+            .unwrap();
+        let adjacent = state.cells[index].adjacent;
+        let covered: Vec<_> = neighbors(state.settings.difficulty, index)
+            .filter(|&neighbor| !state.cells[neighbor].revealed)
+            .collect();
+        for &neighbor in covered.iter().take(usize::from(adjacent)) {
+            state.toggle_flag(neighbor);
+        }
+        state.events.clear();
+
+        state.clock = 9.0;
+        state.reveal_adjacent(index);
+        assert_eq!(state.events.len(), 1);
+        assert_eq!(state.events[0].at, 9.0);
+        assert_eq!(state.events[0].kind, EventKind::RevealNeighbours(index));
+    }
+
+    fn finished_state() -> State {
+        let mut state = State::new(1);
+        state.clock = 10.0;
+        state.reveal(40);
+        let covered = (0..state.cells.len())
+            .find(|&index| !state.cells[index].revealed)
+            .unwrap();
+        state.clock = 20.0;
+        state.toggle_flag(covered);
+        let mine = (0..state.cells.len())
+            .find(|&index| state.cells[index].mine)
+            .unwrap();
+        state.clock = 30.0;
+        state.reveal(mine);
+        assert_eq!(state.outcome, Outcome::Lost);
+        state
+    }
+
+    #[test]
+    fn replay_rebuilds_the_final_board_from_events() {
+        let mut state = finished_state();
+        let final_cells = state.cells.clone();
+        let events = state.events.clone();
+        state.start_replay();
+        assert_eq!(state.cells, final_cells);
+
+        let replay = state.replay.as_mut().unwrap();
+        assert!(!replay.game.started);
+        for event in events {
+            replay.game.clock = event.at;
+            replay.game.apply_event(event.kind);
+            replay.next_event += 1;
+        }
+        assert_eq!(replay.game.cells, final_cells);
+        assert_eq!(replay.game.outcome, Outcome::Lost);
+    }
+
+    #[test]
+    fn replay_advances_with_speed_pauses_and_can_be_skipped() {
+        let mut state = finished_state();
+        let final_cells = state.cells.clone();
+        state.start_replay();
+        state.advance_replay(0.0);
+        assert_eq!(state.replay.as_ref().unwrap().next_event, 1);
+
+        state.toggle_replay_playback();
+        state.advance_replay(100.0);
+        assert_eq!(state.replay.as_ref().unwrap().next_event, 1);
+        state.toggle_replay_playback();
+        state.cycle_replay_speed();
+        state.advance_replay(5.0);
+        assert_eq!(state.replay.as_ref().unwrap().next_event, 2);
+        state.cycle_replay_speed();
+        state.cycle_replay_speed();
+        state.advance_replay(1.25);
+        assert!(state.replay.is_none());
+        assert_eq!(state.cells, final_cells);
+
+        state.start_replay();
+        state.skip_replay();
+        assert!(state.replay.is_none());
+        assert_eq!(state.cells, final_cells);
     }
 
     #[test]

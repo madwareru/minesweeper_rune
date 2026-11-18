@@ -20,7 +20,7 @@ The game supports:
 | Moderate | 16×16 | 40 |
 | Hard | 30×16 | 99 |
 
-The first revealed cell and its neighbors are always safe. Primary click reveals, secondary click toggles a flag, and double-click on a revealed number reveals its neighbors when the adjacent flag count matches that number. Empty cells flood-reveal. The game also has restart, dynamic window sizing, a logical-clock timer, persistent best winning times per difficulty, and subtle inactivity hints.
+The first revealed cell and its neighbors are always safe. Primary click reveals, secondary click toggles a flag, and double-click on a revealed number reveals its neighbors when the adjacent flag count matches that number. Empty cells flood-reveal. The game also has restart, dynamic window sizing, a logical-clock timer, persistent best winning times per difficulty, subtle inactivity hints, and event-sourced replays.
 
 ## Repository layout
 
@@ -36,12 +36,12 @@ There are no separate library, engine, renderer, asset, integration-test, CI, pa
 
 ## Runtime architecture
 
-`main()` calls `rune::run` with an `AppSpec<State>`. `AppSpec::new` connects the window title and size, `State::default`, and the root `view` function. The `poll` hook advances the logical clock, updates hints, and requests a one-second wake while a game is active; Rune's renderer owns hint animation frames. Named `AppSpec::scenes` (`revealed`, `flagged`, `lost`, and `won`) set up deterministic states for Rune's headless tools.
+`main()` calls `rune::run` with an `AppSpec<State>`. `AppSpec::new` connects the window title and size, `State::default`, and the root `view` function. The `poll` hook advances the logical clock and replay playback, updates hints, and schedules the next replay event or a one-second wake while a game is active; Rune's renderer owns hint animation frames. Named `AppSpec::scenes` (`revealed`, `flagged`, `lost`, and `won`) set up deterministic states for Rune's headless tools.
 
 The code is organized by responsibility:
 
-- `model.rs` defines `Difficulty`, `Cell`, `Outcome`, `Settings`, `HintKind`, `Hint`, `GameState`, and `State`. `Difficulty` defines board dimensions, mine counts, display names, record keys, and record-array indices. Cells are stored row-major in a `Vec<Cell>`; an index is `y * width + x`. `State` implements `Deref<Target = GameState>` and `DerefMut`, so game fields are accessed directly through `State`.
-- `game.rs` implements `State::reveal`, `reveal_adjacent`, `toggle_flag`, `new_game`, `set_difficulty`, `place_mines`, and `update_hint`. Its `neighbors` helper performs bounds-checked orthogonal and diagonal neighbor iteration for the active difficulty.
+- `model.rs` defines `Difficulty`, `Cell`, `Outcome`, `Settings`, `HintKind`, `Hint`, `EventKind`, `GameEvent`, `Replay`, `GameState`, and `State`. `Difficulty` defines board dimensions, mine counts, display names, record keys, and record-array indices. Cells are stored row-major in a `Vec<Cell>`; an index is `y * width + x`. `State` implements `Deref<Target = GameState>` and `DerefMut`, so game fields are accessed directly through `State`; `State::displayed` selects the live or replay board for rendering.
+- `game.rs` implements `State::reveal`, `reveal_adjacent`, `toggle_flag`, `new_game`, `set_difficulty`, `place_mines`, `update_hint`, and replay controls. Its `neighbors` helper performs bounds-checked orthogonal and diagonal neighbor iteration for the active difficulty.
 - Mine placement is deferred until the first reveal. A small deterministic wrapping PRNG selects mines outside the first cell's safe neighborhood; resets increment the seed. Empty-cell expansion uses an explicit stack rather than recursion.
 - `poll`, `GameState::elapsed_seconds`, and `view::format_time` implement timing with Rune's logical clock, not wall-clock reads.
 - `view.rs` renders one accessible, focusable button per cell through `cell_view`. `view` builds the title, status, difficulty controls, board, timer, New Game button, and record display from Rune elements and `rune::tok` theme values.
@@ -49,9 +49,11 @@ The code is organized by responsibility:
 
 After 15 seconds without successful progress, `update_hint` selects the first candidate in this priority order: a revealed number whose covered-neighbor count, including flags, equals its number and which has an unflagged covered neighbor (`MineCount`); a revealed number whose adjacent flag count matches its number and which has an unflagged covered neighbor (`DoubleClick`); or an unflagged, covered, non-mine cell adjacent to a revealed safe cell, ranking candidates first by whether their covered-neighbor count equals their own adjacent-mine count and then by revealed-safe-neighbor count (`Safe`). The first two rules use visible information only; only the final fallback inspects hidden mine positions. A hint remains stable until a successful reveal or either flag toggle clears it and restarts inactivity tracking; no-op input does neither. New games and finished games have no hint. `view.rs` applies a static accent tint and `rune::LoopSpec::opacity` for a one-second pulse without changing layout. Rune Motion owns animation timing and reduced-motion behavior. Accessibility labels identify mine-count, double-click, and safe-cell hints. Game tests own selection, priority, and reset semantics; view tests own opacity pulse, reduced-motion rendering, and hint labels.
 
+`State` records accepted `RevealCell`, `ToggleFlag`, and `RevealNeighbours` events with logical-clock timestamps. `record_event` and `apply_event` share the same mutation path for live play and replay; rejected or no-op actions are not logged, and neighbor expansion remains one event. New games and difficulty changes clear the queue. After win/loss, Replay creates a separate state with the same difficulty and seed plus in-memory preferences, then applies events from the first timestamp at recorded intervals. Playback starts immediately with `⏵`/`❙❙`, ×1/×2/×4/×8 speed cycling, and `⏵⏵❙` skip above an event-count progress bar whose fill grows rightward inside a fixed track. Completion or skip returns to the untouched final live board. Cell input and hints are disabled during replay, and difficulty controls are hidden. Events and replay history are not persisted.
+
 `State::default` opens Rune preferences with application ID `com.madware.minesweeper`. Records use keys `best_easy`, `best_moderate`, and `best_hard`. Only a winning time that improves the current difficulty's record replaces it. Writes are best-effort by design; the in-memory record still updates if persistence fails. Starting a new game or changing difficulty preserves records.
 
-Stable element keys are part of the testing and headless-tooling interface: `root`, `cell-{index}`, `difficulty-easy`, `difficulty-moderate`, `difficulty-hard`, `new-game`, `status`, `timer`, and `record`. Cell labels describe row, column, and state for accessibility and element-tree inspection.
+Stable element keys are part of the testing and headless-tooling interface: `root`, `cell-{index}`, `difficulty-easy`, `difficulty-moderate`, `difficulty-hard`, `new-game`, `replay`, `replay-progress-track`, `replay-progress-fill`, `replay-play`, `replay-speed`, `replay-skip`, `status`, `timer`, and `record`. Cell labels describe row, column, and state for accessibility and element-tree inspection.
 
 ## Build and run commands
 

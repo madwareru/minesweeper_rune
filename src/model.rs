@@ -95,6 +95,26 @@ pub(crate) struct Hint {
     pub(crate) kind: HintKind,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum EventKind {
+    RevealCell(usize),
+    ToggleFlag(usize),
+    RevealNeighbours(usize),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct GameEvent {
+    pub(crate) at: f64,
+    pub(crate) kind: EventKind,
+}
+
+pub(crate) struct Replay {
+    pub(crate) game: Box<State>,
+    pub(crate) next_event: usize,
+    pub(crate) playing: bool,
+    pub(crate) speed: f64,
+}
+
 #[derive(Default)]
 pub(crate) struct GameState {
     pub(crate) cells: Vec<Cell>,
@@ -119,6 +139,8 @@ pub(crate) struct State {
     pub(crate) settings: Settings,
     pub(crate) game_state: GameState,
     pub(crate) records: [Option<u64>; 3],
+    pub(crate) events: Vec<GameEvent>,
+    pub(crate) replay: Option<Replay>,
     pub(crate) prefs: Prefs,
     /// used to avoid heap allocations for temporary vectors
     pub(crate) tmp_buffer: Vec<usize>,
@@ -139,6 +161,12 @@ impl std::ops::DerefMut for State {
 }
 
 impl State {
+    pub(crate) fn displayed(&self) -> &State {
+        self.replay
+            .as_ref()
+            .map_or(self, |replay| replay.game.as_ref())
+    }
+
     #[cfg(test)]
     pub(crate) fn new(seed: u64) -> Self {
         Self::with_prefs(seed, Prefs::memory())
@@ -156,6 +184,8 @@ impl State {
                 ..Default::default()
             },
             records,
+            events: vec![],
+            replay: None,
             prefs,
             tmp_buffer: vec![],
         }
